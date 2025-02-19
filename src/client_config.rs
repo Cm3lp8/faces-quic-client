@@ -1,4 +1,5 @@
 pub use client_configuration::ClientConfig;
+pub use connexion_info::ConnexionInfos;
 mod client_configuration {
     use std::net::SocketAddr;
 

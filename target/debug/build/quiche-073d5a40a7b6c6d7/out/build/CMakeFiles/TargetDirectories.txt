@@ -1,0 +1,5 @@
+/home/camille/Documents/rust/faces-quic-client/target/debug/build/quiche-073d5a40a7b6c6d7/out/build/CMakeFiles/crypto.dir
+/home/camille/Documents/rust/faces-quic-client/target/debug/build/quiche-073d5a40a7b6c6d7/out/build/CMakeFiles/ssl.dir
+/home/camille/Documents/rust/faces-quic-client/target/debug/build/quiche-073d5a40a7b6c6d7/out/build/CMakeFiles/bssl.dir
+/home/camille/Documents/rust/faces-quic-client/target/debug/build/quiche-073d5a40a7b6c6d7/out/build/CMakeFiles/edit_cache.dir
+/home/camille/Documents/rust/faces-quic-client/target/debug/build/quiche-073d5a40a7b6c6d7/out/build/CMakeFiles/rebuild_cache.dir

@@ -8,6 +8,8 @@ pub use response_manager::{ResponseChannel, ResponseHead, ResponseQueue};
 
 mod client_management {
 
+    use crate::client_config::ConnexionInfos;
+
     use self::{
         client_request_manager::ClientRequestManager, request_manager::RequestHead,
         response_manager::ResponseHead,
@@ -20,6 +22,7 @@ mod client_management {
         response_channel: ResponseChannel,
         body_channel: BodyChannel,
         request_manager: ClientRequestManager,
+        connexion_infos: ConnexionInfos,
     }
 
     impl Http3ClientManager {
@@ -27,7 +30,7 @@ mod client_management {
         ///Create the Http3ClientManager instance on which request and response channels (head and queue) can be called, as
         ///well as communication interface with the hosting app
         ///
-        pub fn new() -> Self {
+        pub fn new(connexion_infos: ConnexionInfos) -> Self {
             let request_channel = RequestChannel::new();
             let response_channel = ResponseChannel::new();
             let body_channel = BodyChannel::new();
@@ -35,6 +38,7 @@ mod client_management {
                 request_channel.get_head(),
                 response_channel.get_queue(),
                 body_channel.get_head(),
+                connexion_infos.clone(),
             );
 
             Self {
@@ -42,6 +46,7 @@ mod client_management {
                 response_channel,
                 body_channel,
                 request_manager,
+                connexion_infos,
             }
         }
 

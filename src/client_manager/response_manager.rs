@@ -1,5 +1,18 @@
 pub use queue_builder::{ResponseChannel, ResponseHead, ResponseQueue};
 pub use response_builder::Http3Response;
+
+mod response_mngr {
+    use super::*;
+
+    pub struct ResponseManager {
+        response_queue: ResponseQueue,
+    }
+    impl ResponseManager {
+        pub fn run(&self) {
+            u
+        }
+    }
+}
 mod queue_builder {
     use super::*;
 
