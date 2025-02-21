@@ -6,7 +6,7 @@ mod client_request_mngr {
             request_manager::{
                 Http3Request, Http3RequestBuilder, Http3RequestConfirm, RequestHead,
             },
-            response_manager::Http3Response,
+            response_manager::{Http3Response, PartialResponse, ResponseManager, WaitPeerResponse},
             BodyHead, RequestQueue, ResponseQueue,
         },
     };
@@ -21,6 +21,7 @@ mod client_request_mngr {
         response_queue: ResponseQueue,
         body_head: BodyHead,
         connexion_infos: ConnexionInfos,
+        response_manager: ResponseManager,
     }
 
     impl Clone for ClientRequestManager {
@@ -30,6 +31,7 @@ mod client_request_mngr {
                 response_queue: self.response_queue.clone(),
                 body_head: self.body_head.clone(),
                 connexion_infos: self.connexion_infos.clone(),
+                response_manager: self.response_manager.clone(),
             }
         }
     }
@@ -41,11 +43,16 @@ mod client_request_mngr {
             body_head: BodyHead,
             connexion_infos: ConnexionInfos,
         ) -> Self {
+            let resp_queue = response_queue.clone();
+            let response_manager = ResponseManager::new(resp_queue);
+            response_manager.run();
+
             Self {
                 request_head,
                 response_queue,
                 body_head,
                 connexion_infos,
+                response_manager,
             }
         }
 
@@ -56,7 +63,7 @@ mod client_request_mngr {
         pub fn new_request(
             &mut self,
             request_builder: impl FnOnce(&mut Http3RequestBuilder),
-        ) -> Result<Http3Response, ()> {
+        ) -> Result<WaitPeerResponse, ()> {
             let mut http3_request_builder = Http3Request::new();
             request_builder(&mut http3_request_builder);
 
@@ -67,10 +74,29 @@ mod client_request_mngr {
                      *
                      * wait here the stream_id with the response confirm
                      *
+                     *
                      * */
+
+                    let response_manager_submission = self.response_manager.submitter();
+                    let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
+                    let response_sender = response_chan.0.clone();
 
                     std::thread::spawn(move || {
                         let stream_id = http3_confirm.wait_stream_id();
+                        if let Ok(stream_id) = stream_id {
+                            let (partial_response, completed_channel) =
+                                PartialResponse::new(stream_id);
+
+                            let peer_response = WaitPeerResponse::new(stream_id, completed_channel);
+                            if let Err(e) = response_sender.send(peer_response) {
+                                println!("Error: sending back WaitPeerResponse failed stream_id[{stream_id}] [{:?}]",e);
+                            }
+
+                            //send partial response to the reponse manager
+                            if let Err(e) = response_manager_submission.submit(partial_response) {
+                                println!("Error: failed to submit Partial response for stream_id[{stream_id}]   [{:?}]",e );
+                            }
+                        }
 
                         /*
                          *
@@ -82,7 +108,11 @@ mod client_request_mngr {
                          * */
                     });
 
-                    Ok(http3_response)
+                    if let Ok(response) = response_chan.1.recv() {
+                        Ok(response)
+                    } else {
+                        Err(())
+                    }
                 }
                 Err(()) => Err(()),
             }
