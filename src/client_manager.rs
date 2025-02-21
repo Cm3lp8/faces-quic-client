@@ -3,17 +3,15 @@ mod client_request_manager;
 mod request_manager;
 mod response_manager;
 pub use body_manager::{BodyChannel, BodyHead, BodyQueue};
+pub use client_request_manager::ClientRequestManager;
 pub use request_manager::{RequestChannel, RequestQueue};
 pub use response_manager::{ResponseChannel, ResponseHead, ResponseQueue};
 
+pub use super::client_config::ConnexionInfos;
+pub use client_management::Http3ClientManager;
 mod client_management {
 
-    use crate::client_config::ConnexionInfos;
-
-    use self::{
-        client_request_manager::ClientRequestManager, request_manager::RequestHead,
-        response_manager::ResponseHead,
-    };
+    use self::{request_manager::RequestHead, response_manager::ResponseHead};
 
     use super::*;
 

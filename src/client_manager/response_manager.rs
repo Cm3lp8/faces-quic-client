@@ -139,6 +139,11 @@ mod response_builder {
         data: Vec<u8>,
     }
 
+    impl CompletedResponse {
+        pub fn new(stream_id: u64, data: Vec<u8>) -> Self {
+            Self { stream_id, data }
+        }
+    }
     ///
     ///
     ///A partial response packet from the server.
@@ -158,6 +163,9 @@ mod response_builder {
         }
         pub fn len(&self) -> usize {
             self.packet.len()
+        }
+        pub fn is_end(&self) -> bool {
+            self.end
         }
     }
 
@@ -197,12 +205,31 @@ mod response_builder {
         pub fn stream_id(&self) -> u64 {
             self.stream_id
         }
+        pub fn extend_data(&mut self, server_packet: Http3Response) -> bool {
+            let mut can_delete_in_table = false;
+            self.data.extend_from_slice(server_packet.packet());
+
+            if server_packet.is_end() {
+                if let Err(e) = self.channel.0.send(CompletedResponse::new(
+                    self.stream_id,
+                    std::mem::replace(&mut self.data, vec![]),
+                )) {
+                    println!(
+                        "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
+                        server_packet.stream_id(),
+                        e
+                    );
+                } else {
+                    can_delete_in_table = true;
+                }
+            }
+            can_delete_in_table
+        }
     }
 }
 mod response_manager_worker {
     use std::{
         collections::HashMap,
-        hash::Hash,
         sync::{Arc, Mutex},
     };
 
@@ -217,16 +244,24 @@ mod response_manager_worker {
         let partial_response_table = Arc::new(Mutex::new(HashMap::<u64, PartialResponse>::new()));
         let partial_table_clone_0 = partial_response_table.clone();
         let partial_table_clone_1 = partial_response_table.clone();
-        std::thread::spawn(
-            move || {
-                while let Ok(server_response) = response_queue.pop_response() {}
-            },
-        );
+        std::thread::spawn(move || {
+            while let Ok(server_response) = response_queue.pop_response() {
+                let table_guard = &mut *partial_table_clone_0.lock().unwrap();
+                let stream_id = server_response.stream_id();
+                let mut delete_entry = false;
+                if let Some(entry) = table_guard.get_mut(&stream_id) {
+                    delete_entry = entry.extend_data(server_response);
+                }
+                if delete_entry {
+                    table_guard.remove(&stream_id);
+                }
+            }
+        });
 
         std::thread::spawn(move || {
             while let Ok(partial_response_submission) = partial_response_receiver.recv() {
                 let stream_id = partial_response_submission.stream_id();
-                let table_guard = &mut *partial_table_clone_0.lock().unwrap();
+                let table_guard = &mut *partial_table_clone_1.lock().unwrap();
 
                 table_guard.insert(stream_id, partial_response_submission);
             }
