@@ -4,6 +4,8 @@ pub use request_builder::{Http3Request, Http3RequestBuilder, Http3RequestConfirm
 mod queue_builder {
     use quiche::h3::Header;
 
+    use self::request_builder::BodyRequest;
+
     use super::*;
 
     pub struct RequestChannel {
@@ -23,6 +25,47 @@ mod queue_builder {
         ) -> Result<(), crossbeam::channel::SendError<Http3Request>> {
             self.head.send(request)
         }
+        ///
+        ///Here we split the given body if necessary : Send body in chunks. Open a thread that read the buffer in loop, sending chunk by chunk
+        ///the body with the stream_id.
+        ///
+        ///
+        pub fn send_body(&self, stream_id: u64, chunk_size: usize, body: Vec<u8>) {
+            let body_sender = self.head.clone();
+            std::thread::spawn(move || {
+                let body = body;
+                let mut byte_send = 0;
+                let mut packet_send = 0;
+
+                while byte_send < body.len() {
+                    let end = if byte_send + chunk_size <= body.len() {
+                        let end = chunk_size + byte_send;
+                        byte_send += chunk_size;
+                        end
+                    } else {
+                        let end = byte_send + (body.len() - byte_send);
+                        byte_send += body.len() - byte_send;
+                        end
+                    };
+                    let data = body[byte_send..end].to_vec();
+
+                    let body_request = Http3Request::Body(BodyRequest::new(
+                        stream_id,
+                        data,
+                        if byte_send >= body.len() { true } else { false },
+                    ));
+
+                    if let Err(e) = body_sender.send(body_request) {
+                        println!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
+                        break;
+                    }
+                }
+                println!(
+                    "Body [{}] bytes send succesfully on stream [{stream_id}] ",
+                    byte_send
+                );
+            });
+        }
     }
 
     pub struct RequestQueue {
@@ -30,15 +73,11 @@ mod queue_builder {
     }
 
     impl RequestQueue {
-        pub fn pop_request(
-            &self,
-            connexion_id: String,
-            req_cb: impl FnOnce(&Vec<Header>) -> Result<u64, quiche::h3::Error>,
-        ) {
+        pub fn pop_request(&self) -> Option<Http3Request> {
             if let Ok(new_req) = self.queue.try_recv() {
-                if let Ok(stream_id) = req_cb(new_req.headers()) {
-                    new_req.send_ids(stream_id, connexion_id.as_str());
-                }
+                Some(new_req)
+            } else {
+                None
             }
         }
     }
@@ -78,6 +117,8 @@ mod queue_builder {
 }
 
 mod request_builder {
+    use std::net::SocketAddr;
+
     use quiche::h3::{self, Header};
 
     use self::request_format::H3Method;
@@ -107,19 +148,63 @@ mod request_builder {
     ///Backchannel will send back the given stream_id for this request.
     ///
     ///
-    pub struct Http3Request {
+    ///
+    ///
+    pub enum Http3Request {
+        Body(BodyRequest),
+        Header(HeaderRequest),
+    }
+
+    pub struct BodyRequest {
+        stream_id: u64,
+        data: Vec<u8>,
+        is_end: bool,
+    }
+    impl BodyRequest {
+        pub fn new(stream_id: u64, data: Vec<u8>, is_end: bool) -> Self {
+            BodyRequest {
+                stream_id,
+                data,
+                is_end,
+            }
+        }
+        pub fn stream_id(&self) -> u64 {
+            self.stream_id
+        }
+        pub fn take_data(&mut self) -> Vec<u8> {
+            std::mem::replace(&mut self.data, Vec::with_capacity(1))
+        }
+        pub fn data(&self) -> &[u8] {
+            &self.data[..]
+        }
+        pub fn is_end(&self) -> bool {
+            self.is_end
+        }
+    }
+
+    pub struct HeaderRequest {
         headers: Vec<h3::Header>,
         stream_id_response: crossbeam::channel::Sender<(u64, String)>,
     }
-
-    impl Http3Request {
-        pub fn new() -> Http3RequestBuilder {
-            Http3RequestBuilder {
-                method: None,
-                path: None,
-                scheme: None,
-                user_agent: None,
+    impl Clone for HeaderRequest {
+        fn clone(&self) -> Self {
+            Self {
+                headers: self.headers.clone(),
+                stream_id_response: self.stream_id_response.clone(),
             }
+        }
+    }
+    impl HeaderRequest {
+        pub fn new(stream_id_response: crossbeam::channel::Sender<(u64, String)>) -> HeaderRequest {
+            HeaderRequest {
+                headers: vec![],
+                stream_id_response,
+            }
+        }
+        pub fn add_header(mut self, name: &str, value: &str) -> Self {
+            self.headers
+                .push(h3::Header::new(name.as_bytes(), value.as_bytes()));
+            self
         }
         pub fn send_ids(
             &self,
@@ -135,28 +220,89 @@ mod request_builder {
         }
     }
 
+    impl Http3Request {
+        pub fn new(peer_socket_address: Option<SocketAddr>) -> Http3RequestBuilder {
+            Http3RequestBuilder {
+                method: None,
+                path: None,
+                scheme: None,
+                user_agent: None,
+                authority: peer_socket_address,
+            }
+        }
+    }
+
     pub struct Http3RequestBuilder {
         method: Option<H3Method>,
         path: Option<&'static str>,
         scheme: Option<&'static str>,
         user_agent: Option<&'static str>,
+        authority: Option<SocketAddr>,
     }
 
     impl Http3RequestBuilder {
-        pub fn build(&self) -> Result<(Http3Request, Http3RequestConfirm), ()> {
-            if self.method.is_none() || self.path.is_none() {
+        pub fn set_method(&mut self, method: H3Method) -> &mut Self {
+            self.method = Some(method);
+            self
+        }
+        pub fn set_path(&mut self, path: &'static str) -> &mut Self {
+            self.path = Some(path);
+            self
+        }
+        pub fn user_agent(&mut self, user_agent: &'static str) -> &mut Self {
+            self.user_agent = Some(user_agent);
+            self
+        }
+        pub fn build(&mut self) -> Result<(Vec<Http3Request>, Option<Http3RequestConfirm>), ()> {
+            if self.method.is_none() || self.path.is_none() || self.authority.is_none() {
                 println!("http3 request, nothing to build !");
                 return Err(());
             }
+            let body = Some(vec![1000]);
             let (sender, receiver) = crossbeam::channel::bounded::<(u64, String)>(1);
-            let confirmation = Http3RequestConfirm { response: receiver };
-            Ok((
-                Http3Request {
-                    headers: vec![],
-                    stream_id_response: sender,
-                },
-                confirmation,
-            ))
+            let confirmation = Some(Http3RequestConfirm { response: receiver });
+
+            let http_request = match self.method.take().unwrap() {
+                H3Method::GET => vec![Http3Request::Header(
+                    HeaderRequest::new(sender)
+                        .add_header(":method", "GET")
+                        .add_header(":scheme", "https")
+                        .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
+                        .add_header(
+                            ":authority",
+                            self.authority.as_ref().unwrap().to_string().as_str(),
+                        )
+                        .add_header("accept", "*/*"),
+                )],
+                H3Method::POST {
+                    mut data,
+                    body_type,
+                } => vec![
+                    Http3Request::Header(
+                        HeaderRequest::new(sender)
+                            .add_header(":method", "POST")
+                            .add_header(":scheme", "https")
+                            .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
+                            .add_header(
+                                ":authority",
+                                self.authority.as_ref().unwrap().to_string().as_str(),
+                            )
+                            .add_header("accept", "*/*"),
+                    ),
+                    Http3Request::Body(BodyRequest::new(
+                        99,
+                        std::mem::replace(&mut data, vec![]),
+                        true,
+                    )),
+                ],
+                _ => vec![],
+            };
+
+            if !http_request.is_empty() {
+                Ok((http_request, confirmation))
+            } else {
+                Err(())
+            }
         }
     }
 }
@@ -168,7 +314,7 @@ mod request_format {
     #[derive(PartialEq)]
     pub enum H3Method {
         GET,
-        POST,
+        POST { data: Vec<u8>, body_type: BodyType },
         PUT,
         DELETE,
     }
@@ -181,7 +327,10 @@ mod request_format {
         pub fn parse(input: &[u8]) -> Result<H3Method, ()> {
             match &String::from_utf8_lossy(input)[..] {
                 "GET" => Ok(H3Method::GET),
-                "POST" => Ok(H3Method::POST),
+                "POST" => Ok(H3Method::POST {
+                    data: vec![],
+                    body_type: BodyType::Ping,
+                }),
                 "PUT" => Ok(H3Method::PUT),
                 "DELETE" => Ok(H3Method::DELETE),
                 &_ => Err(()),
@@ -190,7 +339,7 @@ mod request_format {
     }
 
     #[derive(PartialEq)]
-    pub enum RequestType {
+    pub enum BodyType {
         Ping,
         Message(String),
         File(String),
@@ -207,7 +356,7 @@ mod request_format {
                 + Sync
                 + 'static,
         >,
-        request_type: RequestType,
+        body_type: BodyType,
     }
 
     impl PartialEq for RequestForm {
@@ -216,7 +365,7 @@ mod request_format {
                 && self.path() == self.path()
                 && self.scheme == self.scheme
                 && self.authority == other.authority
-                && self.request_type() == other.request_type()
+                && self.body_type() == other.body_type()
         }
     }
 
@@ -230,8 +379,8 @@ mod request_format {
         pub fn method(&self) -> &H3Method {
             &self.method
         }
-        pub fn request_type(&self) -> &RequestType {
-            &self.request_type
+        pub fn body_type(&self) -> &BodyType {
+            &self.body_type
         }
 
         pub fn build_response(
@@ -266,7 +415,7 @@ mod request_format {
                     + 'static,
             >,
         >,
-        request_type: Option<RequestType>,
+        body_type: Option<BodyType>,
     }
 
     impl RequestFormBuilder {
@@ -277,7 +426,7 @@ mod request_format {
                 scheme: None,
                 authority: None,
                 body_cb: None,
-                request_type: None,
+                body_type: None,
             }
         }
 
@@ -288,7 +437,7 @@ mod request_format {
                 scheme: self.scheme.take().expect("expected scheme"),
                 authority: self.authority.clone(),
                 body_cb: self.body_cb.take().expect("No callback cb set"),
-                request_type: self.request_type.take().unwrap(),
+                body_type: self.body_type.take().unwrap(),
             }
         }
 
@@ -334,8 +483,8 @@ mod request_format {
         ///
         ///set the request type, in the context of the faces app
         ///
-        pub fn set_request_type(&mut self, request_type: RequestType) -> &mut Self {
-            self.request_type = Some(request_type);
+        pub fn set_body_type(&mut self, request_type: BodyType) -> &mut Self {
+            self.body_type = Some(request_type);
             self
         }
     }

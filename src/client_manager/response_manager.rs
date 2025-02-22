@@ -376,7 +376,9 @@ mod response_builder {
                 }
                 Http3Response::Body(body) => {
                     if let Some(headers) = &self.headers {
-                        self.data.extend_from_slice(body.packet());
+                        if body.packet.len() > 0 {
+                            self.data.extend_from_slice(body.packet());
+                        }
 
                         if body.is_end() {
                             if let Err(e) = self.channel.0.send(CompletedResponse::new(

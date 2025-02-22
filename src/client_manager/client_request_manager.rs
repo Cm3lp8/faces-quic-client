@@ -1,4 +1,5 @@
 pub use client_request_mngr::ClientRequestManager;
+
 mod client_request_mngr {
     use std::sync::Arc;
 
@@ -71,7 +72,8 @@ mod client_request_mngr {
             &mut self,
             request_builder: impl FnOnce(&mut Http3RequestBuilder),
         ) -> Result<WaitPeerResponse, ()> {
-            let mut http3_request_builder = Http3Request::new();
+            let mut http3_request_builder =
+                Http3Request::new(self.connexion_infos.get_peer_socket_address());
             request_builder(&mut http3_request_builder);
 
             match http3_request_builder.build() {
@@ -84,7 +86,29 @@ mod client_request_mngr {
                     if self.http3_client.is_off() {
                         if let Ok(_) = self.http3_client.connect() {}
                     }
-                    self.request_head.send_request(http3_request).unwrap();
+
+                    for req in &http3_request {
+                        match req {
+                            Http3Request::Header(header_req) => {
+                                self.request_head
+                                    .send_request(Http3Request::Header(header_req.clone()))
+                                    .unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
+                    let stream_ids = http3_confirm.unwrap().wait_stream_ids();
+                    let stream_id = stream_ids.as_ref().unwrap().0;
+
+                    for req in http3_request {
+                        match req {
+                            Http3Request::Body(mut body_req) => {
+                                self.request_head
+                                    .send_body(stream_id, 4096, body_req.take_data());
+                            }
+                            _ => {}
+                        }
+                    }
 
                     let response_manager_submission = self.response_manager.submitter();
                     let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
@@ -96,8 +120,7 @@ mod client_request_mngr {
                          * wait here the stream_id with the response confirm
                          *
                          * */
-                        let stream_id = http3_confirm.wait_stream_ids();
-                        if let Ok(stream_ids) = stream_id {
+                        if let Ok(stream_ids) = stream_ids {
                             let (partial_response, completed_channel) =
                                 PartialResponse::new(&stream_ids);
 

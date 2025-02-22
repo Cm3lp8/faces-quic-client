@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     client_config::{self, ClientConfig},
-    client_manager::{BodyQueue, Http3Response, RequestQueue, ResponseHead},
+    client_manager::{BodyQueue, Http3Request, Http3Response, RequestQueue, ResponseHead},
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
 pub fn run(
@@ -155,18 +155,37 @@ pub fn run(
         // Send HTTP requests once the QUIC connection is established, and until
         // all requests have been sent.
         if let Some(h3_conn) = &mut http3_conn {
-            let trace_id = conn.trace_id();
-            request_queue.pop_request(trace_id.to_string(), |req_header| {
-                h3_conn.send_request(&mut conn, req_header, true)
-            });
-
-            /*
-                        if !req_sent {
-                            println!("sending HTTP request {:?}", req);
-                            h3_conn.send_request(&mut conn, &req, true).unwrap();
-                            req_sent = true;
+            let trace_id = conn.trace_id().to_string();
+            if let Some(req) = request_queue.pop_request() {
+                match req {
+                    Http3Request::Header(header_req) => {
+                        if let Ok(stream_id) =
+                            h3_conn.send_request(&mut conn, header_req.headers(), true)
+                        {
+                            if let Err(e) = header_req.send_ids(stream_id, trace_id.as_str()) {
+                                println!(
+                                    "Error : Failed to send header request [{stream_id}], {:?}",
+                                    e
+                                );
+                            }
                         }
-            */
+                    }
+                    Http3Request::Body(body_req) => {
+                        if let Err(e) = h3_conn.send_body(
+                            &mut conn,
+                            body_req.stream_id(),
+                            body_req.data(),
+                            body_req.is_end(),
+                        ) {
+                            println!(
+                                "Error : Failed to send body request [{}], {:?}",
+                                body_req.stream_id(),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
         }
         if let Some(http3_conn) = &mut http3_conn {
             // Process HTTP/3 events.

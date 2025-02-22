@@ -4,12 +4,13 @@ mod request_manager;
 mod response_manager;
 pub use body_manager::{BodyChannel, BodyHead, BodyQueue};
 pub use client_request_manager::ClientRequestManager;
-pub use request_manager::{RequestChannel, RequestQueue};
+pub use request_manager::{Http3Request, RequestChannel, RequestQueue};
 pub use response_manager::{Http3Response, ResponseChannel, ResponseHead, ResponseQueue};
 
 pub use super::client_config::ConnexionInfos;
 use super::client_init::Http3Client;
 pub use client_management::Http3ClientManager;
+
 mod client_management {
 
     use std::sync::Arc;
