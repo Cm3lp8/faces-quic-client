@@ -1,22 +1,24 @@
-#[macro_use]
+//#[macro_use]
 use quiche::h3::NameValue;
 use ring::rand::*;
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     str::FromStr,
+    sync::Arc,
 };
 
 use crate::{
     client_config::{self, ClientConfig},
-    client_manager::{BodyQueue, RequestQueue, ResponseHead},
+    client_manager::{BodyQueue, Http3Response, RequestQueue, ResponseHead},
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
-fn run(
-    client_config: ClientConfig,
+pub fn run(
+    client_config: Arc<ClientConfig>,
     request_queue: RequestQueue,
     response_queue: ResponseHead,
     body_queue: BodyQueue,
-) {
+    confirm_connexion: crossbeam::channel::Sender<String>,
+) -> Result<String, ()> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
     //    let url = url::Url::parse(&args.next().unwrap()).unwrap();
@@ -133,7 +135,7 @@ fn run(
         println!("done reading");
         if conn.is_closed() {
             println!("connection closed, {:?}", conn.stats());
-            break;
+            break Ok(conn.trace_id().to_owned());
         }
         // Create a new HTTP/3 connection once the QUIC connection is established.
         if conn.is_established() && http3_conn.is_none() {
@@ -141,19 +143,34 @@ fn run(
                 quiche::h3::Connection::with_transport(&mut conn, &h3_config)
                 .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
             );
+
+            if let Err(e) = confirm_connexion.send(conn.trace_id().to_string()) {
+                println!(
+                    "Error : failed to send connxion confirmation for [{:?}]   [{:?}]",
+                    conn.trace_id(),
+                    e
+                );
+            }
         }
         // Send HTTP requests once the QUIC connection is established, and until
         // all requests have been sent.
         if let Some(h3_conn) = &mut http3_conn {
-            //request_queue.pop();
-            if !req_sent {
-                println!("sending HTTP request {:?}", req);
-                h3_conn.send_request(&mut conn, &req, true).unwrap();
-                req_sent = true;
-            }
+            let trace_id = conn.trace_id();
+            request_queue.pop_request(trace_id.to_string(), |req_header| {
+                h3_conn.send_request(&mut conn, req_header, true)
+            });
+
+            /*
+                        if !req_sent {
+                            println!("sending HTTP request {:?}", req);
+                            h3_conn.send_request(&mut conn, &req, true).unwrap();
+                            req_sent = true;
+                        }
+            */
         }
         if let Some(http3_conn) = &mut http3_conn {
             // Process HTTP/3 events.
+            let trace_id = conn.trace_id().to_string();
             loop {
                 match http3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
@@ -162,6 +179,17 @@ fn run(
                             hdrs_to_strings(&list),
                             stream_id
                         );
+                        if let Err(e) = response_queue.send_response(Http3Response::new_header(
+                            stream_id,
+                            trace_id.clone(),
+                            list,
+                            true,
+                        )) {
+                            println!(
+                                "Error failed to send response back [{}]   [{:?}]",
+                                stream_id, e
+                            );
+                        };
                     }
                     Ok((stream_id, quiche::h3::Event::Data)) => {
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
@@ -169,12 +197,30 @@ fn run(
                                 "got {} bytes of response data on stream {}",
                                 read, stream_id
                             );
-                            print!("{}", unsafe { std::str::from_utf8_unchecked(&buf[..read]) });
+                            if let Err(e) =
+                                response_queue.send_response(Http3Response::new_body_data(
+                                    stream_id,
+                                    trace_id.clone(),
+                                    &buf[..read],
+                                    false,
+                                ))
+                            {
+                                println!("Error failed  [{}]   [{:?}]", stream_id, e);
+                            };
+                            //   print!("{}", unsafe { std::str::from_utf8_unchecked(&buf[..read]) });
                         }
                     }
-                    Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                    Ok((stream_id, quiche::h3::Event::Finished)) => {
                         println!("response received in {:?}, closing...", req_start.elapsed());
-                        conn.close(true, 0x00, b"kthxbye").unwrap();
+                        if let Err(e) = response_queue.send_response(Http3Response::new_body_data(
+                            stream_id,
+                            trace_id.clone(),
+                            &[],
+                            true,
+                        )) {
+                            println!("Error failed  [{}]   [{:?}]", stream_id, e);
+                        };
+                        //     conn.close(true, 0x00, b"kthxbye").unwrap();
                     }
                     Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
                         println!("request was reset by peer with {}, closing...", e);
@@ -220,7 +266,7 @@ fn run(
         }
         if conn.is_closed() {
             println!("connection closed, {:?}", conn.stats());
-            break;
+            break Ok(conn.trace_id().to_owned());
         }
     }
 }

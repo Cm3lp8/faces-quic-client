@@ -2,6 +2,8 @@
 pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
 pub use request_builder::{Http3Request, Http3RequestBuilder, Http3RequestConfirm};
 mod queue_builder {
+    use quiche::h3::Header;
+
     use super::*;
 
     pub struct RequestChannel {
@@ -25,6 +27,27 @@ mod queue_builder {
 
     pub struct RequestQueue {
         queue: crossbeam::channel::Receiver<Http3Request>,
+    }
+
+    impl RequestQueue {
+        pub fn pop_request(
+            &self,
+            connexion_id: String,
+            req_cb: impl FnOnce(&Vec<Header>) -> Result<u64, quiche::h3::Error>,
+        ) {
+            if let Ok(new_req) = self.queue.try_recv() {
+                if let Ok(stream_id) = req_cb(new_req.headers()) {
+                    new_req.send_ids(stream_id, connexion_id.as_str());
+                }
+            }
+        }
+    }
+    impl Clone for RequestQueue {
+        fn clone(&self) -> Self {
+            Self {
+                queue: self.queue.clone(),
+            }
+        }
     }
 
     impl Clone for RequestHead {
@@ -55,7 +78,7 @@ mod queue_builder {
 }
 
 mod request_builder {
-    use quiche::h3;
+    use quiche::h3::{self, Header};
 
     use self::request_format::H3Method;
 
@@ -65,13 +88,15 @@ mod request_builder {
     ///Wait for the stream_id given by quic client when sending headers
     ///
     pub struct Http3RequestConfirm {
-        response: crossbeam::channel::Receiver<u64>,
+        response: crossbeam::channel::Receiver<(u64, String)>,
     }
     impl Http3RequestConfirm {
         ///
         ///Block the thread until Client releases back the stream_id for the current_request.
         ///
-        pub fn wait_stream_id(&self) -> Result<u64, crossbeam::channel::RecvError> {
+        ///ids are : stream_id(u64) and connexion id (string)
+        ///
+        pub fn wait_stream_ids(&self) -> Result<(u64, String), crossbeam::channel::RecvError> {
             self.response.recv()
         }
     }
@@ -84,7 +109,7 @@ mod request_builder {
     ///
     pub struct Http3Request {
         headers: Vec<h3::Header>,
-        stream_id_response: crossbeam::channel::Sender<u64>,
+        stream_id_response: crossbeam::channel::Sender<(u64, String)>,
     }
 
     impl Http3Request {
@@ -95,6 +120,18 @@ mod request_builder {
                 scheme: None,
                 user_agent: None,
             }
+        }
+        pub fn send_ids(
+            &self,
+            stream_id: u64,
+            connexion_id: &str,
+        ) -> Result<(), crossbeam::channel::SendError<(u64, String)>> {
+            self.stream_id_response
+                .send((stream_id, connexion_id.to_owned()))
+        }
+
+        pub fn headers(&self) -> &Vec<Header> {
+            &self.headers
         }
     }
 
@@ -111,7 +148,7 @@ mod request_builder {
                 println!("http3 request, nothing to build !");
                 return Err(());
             }
-            let (sender, receiver) = crossbeam::channel::bounded::<u64>(1);
+            let (sender, receiver) = crossbeam::channel::bounded::<(u64, String)>(1);
             let confirmation = Http3RequestConfirm { response: receiver };
             Ok((
                 Http3Request {

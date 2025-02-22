@@ -90,6 +90,21 @@ mod queue_builder {
     pub struct ResponseHead {
         head: crossbeam::channel::Sender<Http3Response>,
     }
+    impl ResponseHead {
+        pub fn send_response(
+            &self,
+            response: Http3Response,
+        ) -> Result<(), crossbeam::channel::SendError<Http3Response>> {
+            self.head.send(response)
+        }
+    }
+    impl Clone for ResponseHead {
+        fn clone(&self) -> Self {
+            Self {
+                head: self.head.clone(),
+            }
+        }
+    }
 
     ///
     ///The end of the queue that pull Response from the client
@@ -132,6 +147,8 @@ mod queue_builder {
 }
 
 mod response_builder {
+    use quiche::h3::{self, Header};
+
     use super::*;
 
     pub struct CompletedResponse {
@@ -149,14 +166,149 @@ mod response_builder {
     ///A partial response packet from the server.
     ///
     ///
-    pub struct Http3Response {
+    pub enum Http3Response {
+        Header(Http3ResponseHeader),
+        Body(Http3ResponseBody),
+    }
+    impl Http3Response {
+        pub fn new_body_data(
+            stream_id: u64,
+            connexion_id: String,
+            packet: &[u8],
+            end: bool,
+        ) -> Self {
+            Self::Body(Http3ResponseBody::new(
+                stream_id,
+                connexion_id,
+                packet.to_vec(),
+                end,
+            ))
+        }
+        pub fn new_header(
+            stream_id: u64,
+            connexion_id: String,
+            headers: Vec<h3::Header>,
+            end: bool,
+        ) -> Self {
+            Self::Header(Http3ResponseHeader::new(
+                stream_id,
+                connexion_id,
+                headers,
+                end,
+            ))
+        }
+        pub fn ids(&self) -> (u64, String) {
+            match self {
+                Http3Response::Header(headers) => {
+                    (headers.stream_id, headers.connexion_id.to_owned())
+                }
+                Http3Response::Body(body) => (body.stream_id, body.connexion_id.to_owned()),
+            }
+        }
+        pub fn stream_id(&self) -> u64 {
+            match self {
+                Http3Response::Header(headers) => headers.stream_id,
+                Http3Response::Body(body) => body.stream_id,
+            }
+        }
+        pub fn connexion_id(&self) -> &String {
+            match self {
+                Http3Response::Header(headers) => &headers.connexion_id,
+                Http3Response::Body(body) => &body.connexion_id,
+            }
+        }
+        pub fn headers(&self) -> Option<Vec<h3::Header>> {
+            match self {
+                Http3Response::Header(headers) => {
+                    println!("Not a body, is an header variant");
+                    None
+                }
+
+                Http3Response::Body(_) => None,
+            }
+        }
+        pub fn packet(&self) -> Option<&[u8]> {
+            match self {
+                Http3Response::Header(_) => {
+                    println!("Not a body, is an header variant");
+                    None
+                }
+
+                Http3Response::Body(body) => Some(&body.packet[..]),
+            }
+        }
+        pub fn len(&self) -> Option<usize> {
+            match self {
+                Http3Response::Header(_) => None,
+                Http3Response::Body(body) => Some(body.packet.len()),
+            }
+        }
+        pub fn is_end(&self) -> bool {
+            match self {
+                Http3Response::Header(headers) => headers.end,
+                Http3Response::Body(body) => body.end,
+            }
+        }
+    }
+    pub struct Http3ResponseHeader {
         stream_id: u64,
+        connexion_id: String,
+        headers: Vec<h3::Header>,
+        end: bool,
+    }
+    impl Http3ResponseHeader {
+        pub fn new(
+            stream_id: u64,
+            connexion_id: String,
+            headers: Vec<h3::Header>,
+            end: bool,
+        ) -> Self {
+            Self {
+                stream_id,
+                connexion_id,
+                headers,
+                end,
+            }
+        }
+        pub fn ids(&self) -> (u64, String) {
+            (self.stream_id, self.connexion_id.to_owned())
+        }
+        pub fn stream_id(&self) -> u64 {
+            self.stream_id
+        }
+        pub fn connexion_id(&self) -> &String {
+            &self.connexion_id
+        }
+        pub fn headers(&self) -> &Vec<Header> {
+            &self.headers
+        }
+        pub fn is_end(&self) -> bool {
+            self.end
+        }
+    }
+    pub struct Http3ResponseBody {
+        stream_id: u64,
+        connexion_id: String,
         packet: Vec<u8>,
         end: bool,
     }
-    impl Http3Response {
+    impl Http3ResponseBody {
+        pub fn new(stream_id: u64, connexion_id: String, packet: Vec<u8>, end: bool) -> Self {
+            Self {
+                stream_id,
+                connexion_id,
+                packet,
+                end,
+            }
+        }
+        pub fn ids(&self) -> (u64, String) {
+            (self.stream_id, self.connexion_id.to_owned())
+        }
         pub fn stream_id(&self) -> u64 {
             self.stream_id
+        }
+        pub fn connexion_id(&self) -> &String {
+            &self.connexion_id
         }
         pub fn packet(&self) -> &[u8] {
             &self.packet[..]
@@ -171,21 +323,25 @@ mod response_builder {
 
     pub struct WaitPeerResponse {
         stream_id: u64,
+        connexion_id: String,
         receiver: crossbeam::channel::Receiver<CompletedResponse>,
     }
     impl WaitPeerResponse {
         pub fn new(
-            stream_id: u64,
+            stream_ids: &(u64, String),
             receiver: crossbeam::channel::Receiver<CompletedResponse>,
         ) -> WaitPeerResponse {
             WaitPeerResponse {
-                stream_id,
+                stream_id: stream_ids.0,
+                connexion_id: stream_ids.1.to_owned(),
                 receiver,
             }
         }
     }
     pub struct PartialResponse {
         stream_id: u64,
+        connexion_id: String,
+        headers: Option<Vec<h3::Header>>,
         data: Vec<u8>,
         channel: (
             crossbeam::channel::Sender<CompletedResponse>,
@@ -193,9 +349,13 @@ mod response_builder {
         ),
     }
     impl PartialResponse {
-        pub fn new(stream_id: u64) -> (Self, crossbeam::channel::Receiver<CompletedResponse>) {
+        pub fn new(
+            stream_ids: &(u64, String),
+        ) -> (Self, crossbeam::channel::Receiver<CompletedResponse>) {
             let partial_response = Self {
-                stream_id,
+                stream_id: stream_ids.0,
+                connexion_id: stream_ids.1.to_owned(),
+                headers: None,
                 data: vec![],
                 channel: crossbeam::channel::bounded(1),
             };
@@ -205,22 +365,36 @@ mod response_builder {
         pub fn stream_id(&self) -> u64 {
             self.stream_id
         }
+        pub fn connexion_id(&self) -> &str {
+            self.connexion_id.as_str()
+        }
         pub fn extend_data(&mut self, server_packet: Http3Response) -> bool {
             let mut can_delete_in_table = false;
-            self.data.extend_from_slice(server_packet.packet());
+            match server_packet {
+                Http3Response::Header(headers) => {
+                    self.headers = Some(headers.headers().to_vec());
+                }
+                Http3Response::Body(body) => {
+                    if let Some(headers) = &self.headers {
+                        self.data.extend_from_slice(body.packet());
 
-            if server_packet.is_end() {
-                if let Err(e) = self.channel.0.send(CompletedResponse::new(
-                    self.stream_id,
-                    std::mem::replace(&mut self.data, vec![]),
-                )) {
-                    println!(
+                        if body.is_end() {
+                            if let Err(e) = self.channel.0.send(CompletedResponse::new(
+                                self.stream_id,
+                                std::mem::replace(&mut self.data, vec![]),
+                            )) {
+                                println!(
                         "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
-                        server_packet.stream_id(),
+                        body.stream_id(),
                         e
                     );
-                } else {
-                    can_delete_in_table = true;
+                            } else {
+                                can_delete_in_table = true;
+                            }
+                        }
+                    } else {
+                        println!("Error : No headers found for body [{}]", body.stream_id());
+                    }
                 }
             }
             can_delete_in_table
@@ -240,20 +414,26 @@ mod response_manager_worker {
 
     use super::*;
 
+    ///
+    ///Run the partial Response table response manager
+    ///
+    ///
+    ///
     pub fn run(response_queue: ResponseQueue, partial_response_receiver: PartialResponseReceiver) {
-        let partial_response_table = Arc::new(Mutex::new(HashMap::<u64, PartialResponse>::new()));
+        let partial_response_table =
+            Arc::new(Mutex::new(HashMap::<(u64, String), PartialResponse>::new()));
         let partial_table_clone_0 = partial_response_table.clone();
         let partial_table_clone_1 = partial_response_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
-                let stream_id = server_response.stream_id();
+                let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
-                if let Some(entry) = table_guard.get_mut(&stream_id) {
+                if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
                     delete_entry = entry.extend_data(server_response);
                 }
                 if delete_entry {
-                    table_guard.remove(&stream_id);
+                    table_guard.remove(&(stream_id, conn_id.to_owned()));
                 }
             }
         });
@@ -261,9 +441,10 @@ mod response_manager_worker {
         std::thread::spawn(move || {
             while let Ok(partial_response_submission) = partial_response_receiver.recv() {
                 let stream_id = partial_response_submission.stream_id();
+                let conn_id = partial_response_submission.connexion_id();
                 let table_guard = &mut *partial_table_clone_1.lock().unwrap();
 
-                table_guard.insert(stream_id, partial_response_submission);
+                table_guard.insert((stream_id, conn_id.to_owned()), partial_response_submission);
             }
         });
     }

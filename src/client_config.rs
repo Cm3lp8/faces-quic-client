@@ -15,6 +15,13 @@ mod client_configuration {
     pub struct ClientConfig {
         connexion_info: ConnexionInfos,
     }
+    impl Clone for ClientConfig {
+        fn clone(&self) -> Self {
+            Self {
+                connexion_info: self.connexion_info.clone(),
+            }
+        }
+    }
 
     impl ClientConfig {
         ///
@@ -31,8 +38,8 @@ mod client_configuration {
         pub fn peer_address(&self) -> Option<SocketAddr> {
             self.connexion_info.get_peer_socket_address()
         }
-        pub fn connexion_infos(&self) -> &ConnexionInfos {
-            &self.connexion_info
+        pub fn connexion_infos(&self) -> ConnexionInfos {
+            self.connexion_info.clone()
         }
     }
 }
@@ -67,6 +74,15 @@ mod connexion_info {
             Self {
                 inner: Arc::new(Mutex::new(ConnexionInfosInner::new())),
             }
+        }
+        pub fn update(&self, new_connexion_setup: &ConnexionInfos) {
+            let input_peer = new_connexion_setup.get_peer_socket_address();
+            let input_local = new_connexion_setup.get_peer_socket_address();
+
+            let current = &mut *self.inner.lock().unwrap();
+
+            current.update_local_socket(input_local.unwrap());
+            current.update_distant_socket(input_peer.unwrap());
         }
 
         pub fn is_builded(&self) -> bool {
@@ -175,6 +191,22 @@ mod connexion_info {
     impl ConnexionInfosInner {
         pub fn new() -> ConnexionInfosInner {
             Self::SetUp(ConnexionInfosSetup::new())
+        }
+        pub fn update_local_socket(&mut self, local_socket: SocketAddr) {
+            match self {
+                ConnexionInfosInner::Builded(conn) => {
+                    conn.local_socket = local_socket;
+                }
+                ConnexionInfosInner::SetUp(conn) => {}
+            }
+        }
+        pub fn update_distant_socket(&mut self, distant_socket: SocketAddr) {
+            match self {
+                ConnexionInfosInner::Builded(conn) => {
+                    conn.local_socket = distant_socket;
+                }
+                ConnexionInfosInner::SetUp(conn) => {}
+            }
         }
     }
 

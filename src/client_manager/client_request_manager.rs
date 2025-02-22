@@ -1,7 +1,10 @@
 pub use client_request_mngr::ClientRequestManager;
 mod client_request_mngr {
+    use std::sync::Arc;
+
     use crate::{
         client_config::ConnexionInfos,
+        client_init::Http3Client,
         client_manager::{
             request_manager::{
                 Http3Request, Http3RequestBuilder, Http3RequestConfirm, RequestHead,
@@ -22,6 +25,7 @@ mod client_request_mngr {
         body_head: BodyHead,
         connexion_infos: ConnexionInfos,
         response_manager: ResponseManager,
+        http3_client: Arc<Http3Client>,
     }
 
     impl Clone for ClientRequestManager {
@@ -32,6 +36,7 @@ mod client_request_mngr {
                 body_head: self.body_head.clone(),
                 connexion_infos: self.connexion_infos.clone(),
                 response_manager: self.response_manager.clone(),
+                http3_client: self.http3_client.clone(),
             }
         }
     }
@@ -42,6 +47,7 @@ mod client_request_mngr {
             response_queue: ResponseQueue,
             body_head: BodyHead,
             connexion_infos: ConnexionInfos,
+            http3_client: Arc<Http3Client>,
         ) -> Self {
             let resp_queue = response_queue.clone();
             let response_manager = ResponseManager::new(resp_queue);
@@ -53,6 +59,7 @@ mod client_request_mngr {
                 body_head,
                 connexion_infos,
                 response_manager,
+                http3_client,
             }
         }
 
@@ -69,32 +76,40 @@ mod client_request_mngr {
 
             match http3_request_builder.build() {
                 Ok((http3_request, http3_confirm)) => {
-                    self.request_head.send_request(http3_request).unwrap();
                     /*
                      *
-                     * wait here the stream_id with the response confirm
-                     *
+                     * if connexion is closed, open it :
                      *
                      * */
+                    if self.http3_client.is_off() {
+                        if let Ok(_) = self.http3_client.connect() {}
+                    }
+                    self.request_head.send_request(http3_request).unwrap();
 
                     let response_manager_submission = self.response_manager.submitter();
                     let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
                     let response_sender = response_chan.0.clone();
 
                     std::thread::spawn(move || {
-                        let stream_id = http3_confirm.wait_stream_id();
-                        if let Ok(stream_id) = stream_id {
+                        /*
+                         *
+                         * wait here the stream_id with the response confirm
+                         *
+                         * */
+                        let stream_id = http3_confirm.wait_stream_ids();
+                        if let Ok(stream_ids) = stream_id {
                             let (partial_response, completed_channel) =
-                                PartialResponse::new(stream_id);
+                                PartialResponse::new(&stream_ids);
 
-                            let peer_response = WaitPeerResponse::new(stream_id, completed_channel);
+                            let peer_response =
+                                WaitPeerResponse::new(&stream_ids, completed_channel);
                             if let Err(e) = response_sender.send(peer_response) {
-                                println!("Error: sending back WaitPeerResponse failed stream_id[{stream_id}] [{:?}]",e);
+                                println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
                             }
 
                             //send partial response to the reponse manager
                             if let Err(e) = response_manager_submission.submit(partial_response) {
-                                println!("Error: failed to submit Partial response for stream_id[{stream_id}]   [{:?}]",e );
+                                println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
                             }
                         }
 

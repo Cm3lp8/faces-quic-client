@@ -16,6 +16,13 @@ mod body_queue_builder {
     pub struct BodyQueue {
         queue: crossbeam::channel::Receiver<Http3Body>,
     }
+    impl Clone for BodyQueue {
+        fn clone(&self) -> Self {
+            Self {
+                queue: self.queue.clone(),
+            }
+        }
+    }
 
     impl Clone for BodyHead {
         fn clone(&self) -> Self {
