@@ -65,11 +65,11 @@ mod client_request_mngr {
         }
 
         ///
-        ///create a new response, get a lazy Http3Response as Result (lazy : response fetching
-        ///can retrieve when user want)
+        ///create a new http3 request. Returns a lazy Http3Response as Result (lazy : response fetching
+        ///can retrieve when user want with recv call).
         ///
         pub fn new_request(
-            &mut self,
+            &self,
             request_builder: impl FnOnce(&mut Http3RequestBuilder),
         ) -> Result<WaitPeerResponse, ()> {
             let mut http3_request_builder =

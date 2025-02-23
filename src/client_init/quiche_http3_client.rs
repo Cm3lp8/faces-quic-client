@@ -1,14 +1,10 @@
 //#[macro_use]
 use quiche::h3::NameValue;
 use ring::rand::*;
-use std::{
-    net::{SocketAddr, ToSocketAddrs},
-    str::FromStr,
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use crate::{
-    client_config::{self, ClientConfig},
+    client_config::ClientConfig,
     client_manager::{BodyQueue, Http3Request, Http3Response, RequestQueue, ResponseHead},
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -91,7 +87,6 @@ pub fn run(
         quiche::h3::Header::new(b"user-agent", b"quiche"),
     ];
     let req_start = std::time::Instant::now();
-    let mut req_sent = false;
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
         // Read incoming UDP packets from the socket and feed them to quiche,

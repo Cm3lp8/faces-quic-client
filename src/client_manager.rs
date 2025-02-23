@@ -4,7 +4,7 @@ mod request_manager;
 mod response_manager;
 pub use body_manager::{BodyChannel, BodyHead, BodyQueue};
 pub use client_request_manager::ClientRequestManager;
-pub use request_manager::{Http3Request, RequestChannel, RequestQueue};
+pub use request_manager::{H3Method, Http3Request, RequestChannel, RequestQueue};
 pub use response_manager::{Http3Response, ResponseChannel, ResponseHead, ResponseQueue};
 
 pub use super::client_config::ConnexionInfos;
@@ -32,8 +32,8 @@ mod client_management {
 
     impl Http3ClientManager {
         ///
-        ///Create the Http3ClientManager instance on which request and response channels (head and queue) can be called, as
-        ///well as communication interface with the hosting app
+        ///Create the Http3ClientManager instance. It is the main interface to the quiche client.
+        ///
         ///
         ///ConnexionInfos can be modified with new_connect_infos()
         ///
@@ -72,25 +72,35 @@ mod client_management {
                 .update(&new_client_config.connexion_infos());
             self
         }
-
-        pub fn request_head(&self) -> RequestHead {
-            self.request_channel.get_head()
-        }
-        pub fn response_head(&self) -> ResponseHead {
-            self.response_channel.get_head()
+        pub fn connexion_infos(&self) -> &ConnexionInfos {
+            &self.connexion_infos
         }
 
-        pub fn request_queue(&self) -> RequestQueue {
-            self.request_channel.get_queue()
+        /// Handle to ClientRequestManager. Send new request from it.
+        pub fn request_manager(&self) -> ClientRequestManager {
+            self.request_manager.clone()
         }
-        pub fn response_queue(&self) -> ResponseQueue {
-            self.response_channel.get_queue()
-        }
-        pub fn body_head(&self) -> BodyHead {
-            self.body_channel.get_head()
-        }
-        pub fn body_queue(&self) -> BodyQueue {
-            self.body_channel.get_queue()
-        }
+
+        /*
+                fn request_head(&self) -> RequestHead {
+                    self.request_channel.get_head()
+                }
+                fn response_head(&self) -> ResponseHead {
+                    self.response_channel.get_head()
+                }
+
+                fn request_queue(&self) -> RequestQueue {
+                    self.request_channel.get_queue()
+                }
+                fn response_queue(&self) -> ResponseQueue {
+                    self.response_channel.get_queue()
+                }
+                fn body_head(&self) -> BodyHead {
+                    self.body_channel.get_head()
+                }
+                fn body_queue(&self) -> BodyQueue {
+                    self.body_channel.get_queue()
+                }
+        */
     }
 }

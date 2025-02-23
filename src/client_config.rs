@@ -3,8 +3,6 @@ pub use connexion_info::ConnexionInfos;
 mod client_configuration {
     use std::net::SocketAddr;
 
-    use mio::net::UdpSocket;
-
     use self::connexion_info::ConnexionInfos;
 
     use super::*;
@@ -49,10 +47,6 @@ mod connexion_info {
         net::SocketAddr,
         sync::{Arc, Mutex},
     };
-
-    use mio::net::UdpSocket;
-
-    use super::*;
 
     ///
     ///Mutable state to keep track of sockets addresses.
@@ -197,7 +191,7 @@ mod connexion_info {
                 ConnexionInfosInner::Builded(conn) => {
                     conn.local_socket = local_socket;
                 }
-                ConnexionInfosInner::SetUp(conn) => {}
+                ConnexionInfosInner::SetUp(_) => {}
             }
         }
         pub fn update_distant_socket(&mut self, distant_socket: SocketAddr) {
@@ -205,7 +199,7 @@ mod connexion_info {
                 ConnexionInfosInner::Builded(conn) => {
                     conn.local_socket = distant_socket;
                 }
-                ConnexionInfosInner::SetUp(conn) => {}
+                ConnexionInfosInner::SetUp(_) => {}
             }
         }
     }
@@ -232,8 +226,7 @@ mod connexion_info {
 
 mod test_client_config {
 
-    use self::client_configuration::ClientConfig;
-
+    #[allow(warnings)]
     use super::*;
 
     #[test]

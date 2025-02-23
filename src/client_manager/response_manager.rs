@@ -24,6 +24,8 @@ mod response_mngr {
                 is_running: Arc::new(Mutex::new(false)),
             }
         }
+        ///
+        ///Process incoming response from the peer
         pub fn run(&self) {
             let guard = &mut *self.is_running.lock().unwrap();
             if !*guard {
@@ -34,6 +36,7 @@ mod response_mngr {
                 *guard = true;
             }
         }
+        // Get the handle to submit PartialResponse to the response manager.
         pub fn submitter(&self) -> PartialResponseSubmitter {
             PartialResponseSubmitter {
                 sender: self.partial_response_channel.0.clone(),
@@ -67,8 +70,7 @@ mod response_mngr {
     }
     impl PartialResponseSubmitter {
         ///
-        ///Submit the Empty PartialResponse with the CompletedResponse queue receiver
-        ///
+        ///Submit the Empty PartialResponse.
         ///
         pub fn submit(
             &self,
@@ -147,18 +149,38 @@ mod queue_builder {
 }
 
 mod response_builder {
+    use std::fmt::Display;
+
     use quiche::h3::{self, Header};
 
     use super::*;
 
     pub struct CompletedResponse {
+        headers: Vec<h3::Header>,
         stream_id: u64,
         data: Vec<u8>,
     }
+    impl Display for CompletedResponse {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "[{:#?}]\n data length : {} bytes\n",
+                self.headers,
+                self.data.len()
+            )
+        }
+    }
 
     impl CompletedResponse {
-        pub fn new(stream_id: u64, data: Vec<u8>) -> Self {
-            Self { stream_id, data }
+        pub fn new(stream_id: u64, headers: Vec<h3::Header>, data: Vec<u8>) -> Self {
+            Self {
+                headers,
+                stream_id,
+                data,
+            }
+        }
+        pub fn take_data(&mut self) -> Vec<u8> {
+            std::mem::replace(&mut self.data, Vec::with_capacity(1))
         }
     }
     ///
@@ -337,6 +359,9 @@ mod response_builder {
                 receiver,
             }
         }
+        pub fn wait_response(&self) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
+            self.receiver.recv()
+        }
     }
     pub struct PartialResponse {
         stream_id: u64,
@@ -373,9 +398,27 @@ mod response_builder {
             match server_packet {
                 Http3Response::Header(headers) => {
                     self.headers = Some(headers.headers().to_vec());
+                    if headers.is_end() {
+                        if let Err(e) = self.channel.0.send(CompletedResponse::new(
+                            self.stream_id,
+                            std::mem::replace(
+                                self.headers.as_mut().unwrap(),
+                                Vec::with_capacity(1),
+                            ),
+                            vec![],
+                        )) {
+                            println!(
+                        "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
+                        headers.stream_id(),
+                        e
+                    );
+                        } else {
+                            can_delete_in_table = true;
+                        }
+                    }
                 }
                 Http3Response::Body(body) => {
-                    if let Some(headers) = &self.headers {
+                    if let Some(_headers) = &self.headers {
                         if body.packet.len() > 0 {
                             self.data.extend_from_slice(body.packet());
                         }
@@ -383,6 +426,10 @@ mod response_builder {
                         if body.is_end() {
                             if let Err(e) = self.channel.0.send(CompletedResponse::new(
                                 self.stream_id,
+                                std::mem::replace(
+                                    self.headers.as_mut().unwrap(),
+                                    Vec::with_capacity(1),
+                                ),
                                 std::mem::replace(&mut self.data, vec![]),
                             )) {
                                 println!(

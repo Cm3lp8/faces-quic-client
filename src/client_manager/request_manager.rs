@@ -1,6 +1,7 @@
 #![allow(warnings)]
 pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
 pub use request_builder::{Http3Request, Http3RequestBuilder, Http3RequestConfirm};
+pub use request_format::H3Method;
 mod queue_builder {
     use quiche::h3::Header;
 
@@ -232,6 +233,7 @@ mod request_builder {
         }
     }
 
+    /// Request builder : call set_method, set_path, set_user_agent, and build.
     pub struct Http3RequestBuilder {
         method: Option<H3Method>,
         path: Option<&'static str>,
@@ -249,7 +251,7 @@ mod request_builder {
             self.path = Some(path);
             self
         }
-        pub fn user_agent(&mut self, user_agent: &'static str) -> &mut Self {
+        pub fn set_user_agent(&mut self, user_agent: &'static str) -> &mut Self {
             self.user_agent = Some(user_agent);
             self
         }
@@ -272,6 +274,10 @@ mod request_builder {
                             ":authority",
                             self.authority.as_ref().unwrap().to_string().as_str(),
                         )
+                        .add_header(
+                            "user-agent",
+                            self.user_agent.as_ref().unwrap().to_string().as_str(),
+                        )
                         .add_header("accept", "*/*"),
                 )],
                 H3Method::POST {
@@ -283,12 +289,19 @@ mod request_builder {
                             .add_header(":method", "POST")
                             .add_header(":scheme", "https")
                             .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
+                            .add_header("content-length", data.len().to_string().as_str())
                             .add_header(
                                 ":authority",
                                 self.authority.as_ref().unwrap().to_string().as_str(),
                             )
+                            .add_header(
+                                "user-agent",
+                                self.user_agent.as_ref().unwrap().to_string().as_str(),
+                            )
                             .add_header("accept", "*/*"),
                     ),
+                    //99 is a place holder before receive a real stream id after submitting the
+                    //   header request
                     Http3Request::Body(BodyRequest::new(
                         99,
                         std::mem::replace(&mut data, vec![]),
@@ -343,6 +356,7 @@ mod request_format {
         Ping,
         Message(String),
         File(String),
+        Array,
     }
 
     pub struct RequestForm {
@@ -486,6 +500,181 @@ mod request_format {
         pub fn set_body_type(&mut self, request_type: BodyType) -> &mut Self {
             self.body_type = Some(request_type);
             self
+        }
+    }
+}
+
+mod test {
+    use std::{net::SocketAddr, str::FromStr};
+
+    use quiche::h3::NameValue;
+    use test::request_format::BodyType;
+
+    use super::*;
+
+    #[test]
+    fn build_post_request() {
+        let mut new_request: Http3RequestBuilder =
+            Http3Request::new(Some(SocketAddr::from_str("127.0.0.1:3000").unwrap()));
+
+        let data = vec![0; 5000];
+        let data_len = data.len();
+        let body_type = BodyType::Ping;
+        let request = new_request
+            .set_method(request_format::H3Method::POST { data, body_type })
+            .set_path("/post")
+            .set_user_agent("Camille")
+            .build();
+
+        assert!(request.is_ok());
+
+        let request = request.unwrap();
+
+        assert!(!request.0.is_empty());
+        assert!(request.1.is_some());
+
+        // Get method build only 1 request header
+        assert!(request.0.len() == 2);
+
+        let header_r = &request.0[0];
+        let body_r = &request.0[1];
+        match header_r {
+            Http3Request::Header(header) => {
+                assert!(true);
+                let hdrs = header.headers();
+
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":method" && it.value() == b"POST")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":method" && it.value() == b"GET")
+                {
+                    assert!(false)
+                } else {
+                    assert!(true)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":authority" && it.value() == b"127.0.0.1:3000")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":scheme" && it.value() == b"https")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs.iter().find(|it| {
+                    it.name() == b"content-length" && it.value() == data_len.to_string().as_bytes()
+                }) {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b"user-agent" && it.value() == b"Camille")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+            }
+            Http3Request::Body(_) => {
+                assert!(false)
+            }
+        }
+    }
+    #[test]
+    fn build_get_request() {
+        let mut new_request: Http3RequestBuilder =
+            Http3Request::new(Some(SocketAddr::from_str("127.0.0.1:3000").unwrap()));
+
+        let request = new_request
+            .set_method(request_format::H3Method::GET)
+            .set_path("/get")
+            .set_user_agent("Camille")
+            .build();
+
+        assert!(request.is_ok());
+
+        let request = request.unwrap();
+
+        assert!(!request.0.is_empty());
+        assert!(request.1.is_some());
+
+        // Get method build only 1 request header
+        assert!(request.0.len() == 1);
+
+        let http_request: &Http3Request = &request.0[0];
+        match http_request {
+            Http3Request::Header(header) => {
+                assert!(true);
+                let hdrs = header.headers();
+
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":method" && it.value() == b"GET")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b"method" && it.value() == b"GET")
+                {
+                    assert!(false)
+                } else {
+                    assert!(true)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":authority" && it.value() == b"127.0.0.1:3000")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":scheme" && it.value() == b"https")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b":scheme" && it.value() == b"https")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+                if let Some(found) = hdrs
+                    .iter()
+                    .find(|it| it.name() == b"user-agent" && it.value() == b"Camille")
+                {
+                    assert!(true)
+                } else {
+                    assert!(false)
+                }
+            }
+            Http3Request::Body(_) => {
+                assert!(false)
+            }
         }
     }
 }
