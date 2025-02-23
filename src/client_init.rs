@@ -7,6 +7,8 @@ mod http3_client {
         sync::{Arc, Mutex},
     };
 
+    use mio::Waker;
+
     use crate::{
         client_config::{self, ClientConfig},
         client_manager::{BodyQueue, RequestQueue, ResponseHead},
@@ -42,18 +44,18 @@ mod http3_client {
         ///Check if a connexion is already started with the requested server
         ///
         pub fn is_off(&self) -> bool {
-            *self.connexion_opened.lock().unwrap()
+            !*self.connexion_opened.lock().unwrap()
         }
         ///
         ///Block and wait for the connexion making.
         ///return the connexion id String.
         ///
         ///
-        pub fn connect(&self) -> Result<String, ()> {
-            if let Ok(conn_id) = self.run() {
+        pub fn connect(&self) -> Result<(String, Waker), ()> {
+            if let Ok((conn_id, waker)) = self.run() {
                 *self.connexion_opened.lock().unwrap() = true;
                 println!("Connexion [{:?}] is opened", conn_id);
-                Ok(conn_id)
+                Ok((conn_id, waker))
             } else {
                 Err(())
             }
@@ -62,13 +64,13 @@ mod http3_client {
         ///
         ///Run the http3 client in a separate Os thread with the client_config.
         ///
-        pub fn run(&self) -> Result<String, crossbeam::channel::RecvError> {
+        pub fn run(&self) -> Result<(String, Waker), crossbeam::channel::RecvError> {
             let configuration_clone = self.client_config.clone();
             let req_queue = self.request_queue.clone();
             let resp_head = self.response_head.clone();
             let body_queue = self.body_queue.clone();
             let connexion_opened = self.connexion_opened.clone();
-            let confirm_connexion_chan = crossbeam::channel::bounded::<String>(1);
+            let confirm_connexion_chan = crossbeam::channel::bounded::<(String, Waker)>(1);
             let confirmation_sender = confirm_connexion_chan.0.clone();
 
             std::thread::spawn(move || {

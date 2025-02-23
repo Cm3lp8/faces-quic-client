@@ -76,6 +76,7 @@ mod queue_builder {
     impl RequestQueue {
         pub fn pop_request(&self) -> Option<Http3Request> {
             if let Ok(new_req) = self.queue.try_recv() {
+                println!("sending next request [{:?}]", new_req);
                 Some(new_req)
             } else {
                 None
@@ -118,7 +119,7 @@ mod queue_builder {
 }
 
 mod request_builder {
-    use std::net::SocketAddr;
+    use std::{fmt::Debug, net::SocketAddr};
 
     use quiche::h3::{self, Header};
 
@@ -156,6 +157,24 @@ mod request_builder {
         Header(HeaderRequest),
     }
 
+    impl Debug for Http3Request {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Body(body) => {
+                    let s_i = body.stream_id();
+                    let data_len = body.data.len();
+                    write!(
+                        f,
+                        "req: body =  stream_id [{s_i}] : Body packet [{}] bytes",
+                        data_len
+                    )
+                }
+                Self::Header(header) => {
+                    write!(f, " req = header [{:#?}]", header.headers())
+                }
+            }
+        }
+    }
     pub struct BodyRequest {
         stream_id: u64,
         data: Vec<u8>,
@@ -186,20 +205,28 @@ mod request_builder {
     pub struct HeaderRequest {
         headers: Vec<h3::Header>,
         stream_id_response: crossbeam::channel::Sender<(u64, String)>,
+        is_end: bool,
     }
     impl Clone for HeaderRequest {
         fn clone(&self) -> Self {
             Self {
                 headers: self.headers.clone(),
                 stream_id_response: self.stream_id_response.clone(),
+                is_end: self.is_end,
             }
         }
     }
     impl HeaderRequest {
-        pub fn new(stream_id_response: crossbeam::channel::Sender<(u64, String)>) -> HeaderRequest {
+        /// Header Request: param 0 : true if server can close stream, false if bodies are
+        /// following.
+        pub fn new(
+            is_end: bool,
+            stream_id_response: crossbeam::channel::Sender<(u64, String)>,
+        ) -> HeaderRequest {
             HeaderRequest {
                 headers: vec![],
                 stream_id_response,
+                is_end,
             }
         }
         pub fn add_header(mut self, name: &str, value: &str) -> Self {
@@ -215,9 +242,11 @@ mod request_builder {
             self.stream_id_response
                 .send((stream_id, connexion_id.to_owned()))
         }
-
         pub fn headers(&self) -> &Vec<Header> {
             &self.headers
+        }
+        pub fn is_end(&self) -> bool {
+            self.is_end
         }
     }
 
@@ -266,7 +295,7 @@ mod request_builder {
 
             let http_request = match self.method.take().unwrap() {
                 H3Method::GET => vec![Http3Request::Header(
-                    HeaderRequest::new(sender)
+                    HeaderRequest::new(true, sender)
                         .add_header(":method", "GET")
                         .add_header(":scheme", "https")
                         .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
@@ -285,7 +314,7 @@ mod request_builder {
                     body_type,
                 } => vec![
                     Http3Request::Header(
-                        HeaderRequest::new(sender)
+                        HeaderRequest::new(false, sender)
                             .add_header(":method", "POST")
                             .add_header(":scheme", "https")
                             .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())

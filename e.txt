@@ -1,5 +1,4 @@
 //#[macro_use]
-use mio::{Token, Waker};
 use quiche::h3::NameValue;
 use ring::rand::*;
 use std::sync::Arc;
@@ -9,13 +8,12 @@ use crate::{
     client_manager::{BodyQueue, Http3Request, Http3Response, RequestQueue, ResponseHead},
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
-const WAKER_TOKEN: Token = Token(1);
 pub fn run(
     client_config: Arc<ClientConfig>,
     request_queue: RequestQueue,
     response_queue: ResponseHead,
     body_queue: BodyQueue,
-    confirm_connexion: crossbeam::channel::Sender<(String, Waker)>,
+    confirm_connexion: crossbeam::channel::Sender<String>,
 ) -> Result<String, ()> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
@@ -33,7 +31,6 @@ pub fn run(
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
     let mut socket = mio::net::UdpSocket::bind(bind_addr).unwrap();
-    let mut waker = Some(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
     poll.registry()
         .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
         .unwrap();
@@ -90,7 +87,6 @@ pub fn run(
             quiche::h3::Header::new(b"user-agent", b"quiche"),
         ];
     */
-    let mut conn_confirmation = false;
     let req_start = std::time::Instant::now();
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
@@ -141,23 +137,19 @@ pub fn run(
                 .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
             );
 
-            if !conn_confirmation {
-                if let Err(e) =
-                    confirm_connexion.send((conn.trace_id().to_string(), waker.take().unwrap()))
-                {
-                    println!(
-                        "Error : failed to send connxion confirmation for [{:?}]   [{:?}]",
-                        conn.trace_id(),
-                        e
-                    );
-                }
-                conn_confirmation = true;
+            if let Err(e) = confirm_connexion.send(conn.trace_id().to_string()) {
+                println!(
+                    "Error : failed to send connxion confirmation for [{:?}]   [{:?}]",
+                    conn.trace_id(),
+                    e
+                );
             }
         }
         // Send HTTP requests once the QUIC connection is established, and until
         // all requests have been sent.
         if let Some(h3_conn) = &mut http3_conn {
             let trace_id = conn.trace_id().to_string();
+            println!("he");
             if let Some(req) = request_queue.pop_request() {
                 match req {
                     Http3Request::Header(header_req) => {

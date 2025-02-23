@@ -1,7 +1,9 @@
 pub use client_request_mngr::ClientRequestManager;
 
 mod client_request_mngr {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+
+    use mio::Waker;
 
     use crate::{
         client_config::ConnexionInfos,
@@ -27,6 +29,7 @@ mod client_request_mngr {
         connexion_infos: ConnexionInfos,
         response_manager: ResponseManager,
         http3_client: Arc<Http3Client>,
+        waker: Arc<Mutex<Option<Waker>>>,
     }
 
     impl Clone for ClientRequestManager {
@@ -38,6 +41,7 @@ mod client_request_mngr {
                 connexion_infos: self.connexion_infos.clone(),
                 response_manager: self.response_manager.clone(),
                 http3_client: self.http3_client.clone(),
+                waker: self.waker.clone(),
             }
         }
     }
@@ -61,6 +65,14 @@ mod client_request_mngr {
                 connexion_infos,
                 response_manager,
                 http3_client,
+                waker: Arc::new(Mutex::new(None)),
+            }
+        }
+        pub fn wake_client(&self) {
+            if let Some(waker) = &*self.waker.lock().unwrap() {
+                if let Err(e) = waker.wake() {
+                    println!("Error : failed waking up the client [{:?}]", e);
+                }
             }
         }
 
@@ -83,16 +95,27 @@ mod client_request_mngr {
                      * if connexion is closed, open it :
                      *
                      * */
+                    println!("Sending new_request");
                     if self.http3_client.is_off() {
-                        if let Ok(_) = self.http3_client.connect() {}
+                        println!("Connect...");
+                        if let Ok((_conn_id, waker)) = self.http3_client.connect() {
+                            *self.waker.lock().unwrap() = Some(waker);
+                            println!("Connected !  waker received ");
+                        }
                     }
 
                     for req in &http3_request {
                         match req {
                             Http3Request::Header(header_req) => {
-                                self.request_head
+                                if let Err(e) = self
+                                    .request_head
                                     .send_request(Http3Request::Header(header_req.clone()))
-                                    .unwrap();
+                                {
+                                    println!("Error sending header request [{:?}]", e)
+                                } else {
+                                    println!("Success: sending header request");
+                                    self.wake_client();
+                                }
                             }
                             _ => {}
                         }
