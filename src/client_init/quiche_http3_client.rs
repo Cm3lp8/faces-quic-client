@@ -1,5 +1,5 @@
 //#[macro_use]
-use mio::{Token, Waker};
+use mio::{Interest, Token, Waker};
 use quiche::h3::NameValue;
 use ring::rand::*;
 use std::sync::Arc;
@@ -35,7 +35,11 @@ pub fn run(
     let mut socket = mio::net::UdpSocket::bind(bind_addr).unwrap();
     let mut waker = Some(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
     poll.registry()
-        .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
+        .register(
+            &mut socket,
+            mio::Token(0),
+            mio::Interest::READABLE | mio::Interest::WRITABLE,
+        )
         .unwrap();
     // Create the configuration for the QUIC connection.
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
@@ -166,6 +170,7 @@ pub fn run(
                             header_req.headers(),
                             header_req.is_end(),
                         ) {
+                            println!("sended succes [{:?}]", header_req);
                             if let Err(e) = header_req.send_ids(stream_id, trace_id.as_str()) {
                                 println!(
                                     "Error : Failed to send header request [{stream_id}], {:?}",
@@ -175,6 +180,7 @@ pub fn run(
                         }
                     }
                     Http3Request::Body(body_req) => {
+                        println!("sending body succes [{:?}]", body_req.data());
                         if let Err(e) = h3_conn.send_body(
                             &mut conn,
                             body_req.stream_id(),

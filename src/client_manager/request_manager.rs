@@ -1,7 +1,7 @@
 #![allow(warnings)]
 pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
 pub use request_builder::{Http3Request, Http3RequestBuilder, Http3RequestConfirm};
-pub use request_format::H3Method;
+pub use request_format::{BodyType, H3Method};
 mod queue_builder {
     use quiche::h3::Header;
 
@@ -41,25 +41,39 @@ mod queue_builder {
                 while byte_send < body.len() {
                     let end = if byte_send + chunk_size <= body.len() {
                         let end = chunk_size + byte_send;
+                        println!("bytes_send [{:?}] end[{:?}]", byte_send, end);
+                        let data = body[byte_send..end].to_vec();
+
+                        let body_request = Http3Request::Body(BodyRequest::new(
+                            stream_id,
+                            data,
+                            if byte_send >= body.len() { true } else { false },
+                        ));
+
+                        if let Err(e) = body_sender.send(body_request) {
+                            println!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
+                            break;
+                        }
                         byte_send += chunk_size;
                         end
                     } else {
                         let end = byte_send + (body.len() - byte_send);
+                        println!("bytes_send [{:?}] end[{:?}]", byte_send, end);
+                        let data = body[byte_send..end].to_vec();
+
+                        let body_request = Http3Request::Body(BodyRequest::new(
+                            stream_id,
+                            data,
+                            if byte_send >= body.len() { true } else { false },
+                        ));
+
+                        if let Err(e) = body_sender.send(body_request) {
+                            println!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
+                            break;
+                        }
                         byte_send += body.len() - byte_send;
                         end
                     };
-                    let data = body[byte_send..end].to_vec();
-
-                    let body_request = Http3Request::Body(BodyRequest::new(
-                        stream_id,
-                        data,
-                        if byte_send >= body.len() { true } else { false },
-                    ));
-
-                    if let Err(e) = body_sender.send(body_request) {
-                        println!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
-                        break;
-                    }
                 }
                 println!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] ",
@@ -202,6 +216,7 @@ mod request_builder {
         }
     }
 
+    #[derive(Debug)]
     pub struct HeaderRequest {
         headers: Vec<h3::Header>,
         stream_id_response: crossbeam::channel::Sender<(u64, String)>,
