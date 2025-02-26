@@ -151,6 +151,7 @@ mod queue_builder {
 mod response_builder {
     use std::fmt::{Debug, Display};
 
+    use log::debug;
     use quiche::h3::{self, Header};
 
     use super::*;
@@ -259,7 +260,7 @@ mod response_builder {
         pub fn headers(&self) -> Option<Vec<h3::Header>> {
             match self {
                 Http3Response::Header(headers) => {
-                    println!("Not a body, is an header variant");
+                    debug!("Not a body, is an header variant");
                     None
                 }
 
@@ -269,7 +270,7 @@ mod response_builder {
         pub fn packet(&self) -> Option<&[u8]> {
             match self {
                 Http3Response::Header(_) => {
-                    println!("Not a body, is an header variant");
+                    debug!("Not a body, is an header variant");
                     None
                 }
 
@@ -425,7 +426,7 @@ mod response_builder {
                             ),
                             vec![],
                         )) {
-                            println!(
+                            debug!(
                         "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
                         headers.stream_id(),
                         e
@@ -436,11 +437,11 @@ mod response_builder {
                     }
                 }
                 Http3Response::Body(body) => {
-                    println!("is body");
+                    debug!("is body");
                     if let Some(_headers) = &self.headers {
                         if body.packet.len() > 0 {
                             self.data.extend_from_slice(body.packet());
-                            println!("body data extended [{:?}]", body.packet.len());
+                            debug!("body data extended [{:?}]", body.packet.len());
                         }
 
                         if body.is_end() {
@@ -452,7 +453,7 @@ mod response_builder {
                                 ),
                                 std::mem::replace(&mut self.data, vec![]),
                             )) {
-                                println!(
+                                debug!(
                         "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
                         body.stream_id(),
                         e
@@ -462,7 +463,7 @@ mod response_builder {
                             }
                         }
                     } else {
-                        println!("Error : No headers found for body [{}]", body.stream_id());
+                        debug!("Error : No headers found for body [{}]", body.stream_id());
                     }
                 }
             }
@@ -475,6 +476,8 @@ mod response_manager_worker {
         collections::HashMap,
         sync::{Arc, Mutex},
     };
+
+    use log::debug;
 
     use self::{
         response_builder::PartialResponse,
@@ -495,20 +498,20 @@ mod response_manager_worker {
         let partial_table_clone_1 = partial_response_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
-                println!("New packet response : [{:?}]", server_response);
+                debug!("New packet response : [{:?}]", server_response);
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
-                    println!("extending data...");
+                    debug!("extending data...");
                     delete_entry = entry.extend_data(server_response);
                 } else {
                     for table_g in table_guard.iter() {
-                        println!("table [{:#?}]", table_g);
+                        debug!("table [{:#?}]", table_g);
                     }
                 }
                 if delete_entry {
-                    println!("Can delete [{stream_id}]");
+                    debug!("Can delete [{stream_id}]");
                     table_guard.remove(&(stream_id, conn_id.to_owned()));
                 }
             }

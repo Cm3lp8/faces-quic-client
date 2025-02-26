@@ -35,7 +35,9 @@ fn main() {
         println!("[{}]", String::from_utf8_lossy(&data));
         println!("Second req");
     */
-    let data = vec![0, 1, 2, 3, 4];
+    let mut data = vec![254; 100_000_000];
+    let after = vec![1, 2, 3, 4];
+    data.extend_from_slice(&after);
     let body_type = BodyType::Array;
     let response_1 = req_manager
         .new_request(|req_builder| {
@@ -52,5 +54,5 @@ fn main() {
 
     let data = res.take_data();
 
-    println!("rec [{:?}]", String::from_utf8_lossy(&data[..10]));
+    println!("rec [{:?}]", String::from_utf8_lossy(&data[..]));
 }

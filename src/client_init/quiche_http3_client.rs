@@ -1,8 +1,13 @@
+use crossbeam::thread;
+use log::debug;
 //#[macro_use]
 use mio::{Interest, Token, Waker};
 use quiche::h3::NameValue;
 use ring::rand::*;
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     client_config::ClientConfig,
@@ -33,6 +38,7 @@ pub fn run(
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
     let mut socket = mio::net::UdpSocket::bind(bind_addr).unwrap();
+
     let mut waker = Some(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
     poll.registry()
         .register(
@@ -68,7 +74,7 @@ pub fn run(
     // Create a QUIC connection and initiate handshake.
     let mut conn =
         quiche::connect(Some("quichec"), &scid, local_addr, peer_addr, &mut config).unwrap();
-    println!(
+    debug!(
         "connecting to {:} from {:} with scid {}",
         peer_addr,
         socket.local_addr().unwrap(),
@@ -77,7 +83,7 @@ pub fn run(
     let (write, send_info) = conn.send(&mut out).expect("initial send failed");
     while let Err(e) = socket.send_to(&out[..write], send_info.to) {
         if e.kind() == std::io::ErrorKind::WouldBlock {
-            println!("send() would block");
+            debug!("send() would block");
             continue;
         }
         panic!("send() failed: {:?}", e);
@@ -105,7 +111,7 @@ pub fn run(
             // has expired, so handle it without attempting to read packets. We
             // will then proceed with the send loop.
             if events.is_empty() {
-                //             println!("timed out");
+                //             debug!("timed out");
                 conn.on_timeout();
                 break 'read;
             }
@@ -115,7 +121,7 @@ pub fn run(
                     // There are no more UDP packets to read, so end the read
                     // loop.
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        println!("recv() would block");
+                        debug!("recv() would block");
                         break 'read;
                     }
                     panic!("recv() failed: {:?}", e);
@@ -129,13 +135,13 @@ pub fn run(
             let read = match conn.recv(&mut buf[..len], recv_info) {
                 Ok(v) => v,
                 Err(e) => {
-                    println!("recv failed: {:?}", e);
+                    debug!("recv failed: {:?}", e);
                     continue 'read;
                 }
             };
         }
         if conn.is_closed() {
-            println!("connection closed, {:?}", conn.stats());
+            debug!("connection closed, {:?}", conn.stats());
             break Ok(conn.trace_id().to_owned());
         }
         // Create a new HTTP/3 connection once the QUIC connection is established.
@@ -149,7 +155,7 @@ pub fn run(
                 if let Err(e) =
                     confirm_connexion.send((conn.trace_id().to_string(), waker.take().unwrap()))
                 {
-                    println!(
+                    debug!(
                         "Error : failed to send connxion confirmation for [{:?}]   [{:?}]",
                         conn.trace_id(),
                         e
@@ -170,9 +176,9 @@ pub fn run(
                             header_req.headers(),
                             header_req.is_end(),
                         ) {
-                            println!("sended succes [{:?}]", header_req);
+                            debug!("sended succes [{:?}]", header_req);
                             if let Err(e) = header_req.send_ids(stream_id, trace_id.as_str()) {
-                                println!(
+                                debug!(
                                     "Error : Failed to send header request [{stream_id}], {:?}",
                                     e
                                 );
@@ -180,14 +186,14 @@ pub fn run(
                         }
                     }
                     Http3Request::Body(body_req) => {
-                        println!("sending body succes [{:?}]", body_req.data());
+                        debug!("sending body succes [{:?}]", body_req.data().len());
                         if let Err(e) = h3_conn.send_body(
                             &mut conn,
                             body_req.stream_id(),
                             body_req.data(),
                             body_req.is_end(),
                         ) {
-                            println!(
+                            debug!(
                                 "Error : Failed to send body request [{}], {:?}",
                                 body_req.stream_id(),
                                 e
@@ -204,7 +210,7 @@ pub fn run(
                 match http3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
                         /*
-                                                println!(
+                                                debug!(
                                                     "got response headers {:?} on stream id {}",
                                                     hdrs_to_strings(&list),
                                                     stream_id
@@ -216,7 +222,7 @@ pub fn run(
                             list,
                             !more_frames,
                         )) {
-                            println!(
+                            debug!(
                                 "Error failed to send response back [{}]   [{:?}]",
                                 stream_id, e
                             );
@@ -225,7 +231,7 @@ pub fn run(
                     Ok((stream_id, quiche::h3::Event::Data)) => {
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
                             /*
-                                                        println!(
+                                                        debug!(
                                                             "got {} bytes of response data on stream {}",
                                                             read, stream_id
                                                         );
@@ -238,36 +244,36 @@ pub fn run(
                                     false,
                                 ))
                             {
-                                println!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
+                                debug!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
                             };
                             //   print!("{}", unsafe { std::str::from_utf8_unchecked(&buf[..read]) });
                         }
                     }
                     Ok((stream_id, quiche::h3::Event::Finished)) => {
-                        println!("response received in {:?}, closing...", req_start.elapsed());
+                        debug!("response received in {:?}, closing...", req_start.elapsed());
                         if let Err(e) = response_queue.send_response(Http3Response::new_body_data(
                             stream_id,
                             trace_id.clone(),
                             &[],
                             true,
                         )) {
-                            println!("Error failed  [{}]   [{:?}]", stream_id, e);
+                            debug!("Error failed  [{}]   [{:?}]", stream_id, e);
                         };
                         //     conn.close(true, 0x00, b"kthxbye").unwrap();
                     }
                     Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
-                        println!("request was reset by peer with {}, closing...", e);
+                        debug!("request was reset by peer with {}, closing...", e);
                         conn.close(true, 0x00, b"kthxbye").unwrap();
                     }
                     Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
                     Ok((goaway_id, quiche::h3::Event::GoAway)) => {
-                        println!("GOAWAY id={}", goaway_id);
+                        debug!("GOAWAY id={}", goaway_id);
                     }
                     Err(quiche::h3::Error::Done) => {
                         break;
                     }
                     Err(e) => {
-                        println!("HTTP/3 processing failed: {:?}", e);
+                        debug!("HTTP/3 processing failed: {:?}", e);
                         break;
                     }
                 }
@@ -275,6 +281,9 @@ pub fn run(
         }
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
+        let mut packet_send = 0;
+        let mut last_send = Instant::now();
+        let pacing_interval = Duration::from_micros(114);
         loop {
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
@@ -282,21 +291,31 @@ pub fn run(
                     break;
                 }
                 Err(e) => {
-                    println!("send failed: {:?}", e);
+                    debug!("send failed: {:?}", e);
                     conn.close(false, 0x1, b"fail").ok();
                     break;
                 }
             };
             if let Err(e) = socket.send_to(&out[..write], send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    println!("send() would block");
+                    debug!("send() would block");
                     break;
                 }
                 panic!("send() failed: {:?}", e);
             }
+            packet_send += 1;
+            if packet_send >= 20 {
+                break;
+            }
+
+            //println!("[{:?}]", &[0; 200]);
+            //
+            while last_send.elapsed() < pacing_interval {
+                std::thread::yield_now();
+            }
         }
         if conn.is_closed() {
-            println!("connection closed, {:?}", conn.stats());
+            debug!("connection closed, {:?}", conn.stats());
             break Ok(conn.trace_id().to_owned());
         }
     }
