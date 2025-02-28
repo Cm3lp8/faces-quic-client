@@ -2,6 +2,7 @@ use faces_quic_client::*;
 
 fn main() {
     let client_config = ClientConfig::new();
+    env_logger::init();
 
     println!("Create config...");
     client_config
@@ -35,7 +36,7 @@ fn main() {
         println!("[{}]", String::from_utf8_lossy(&data));
         println!("Second req");
     */
-    let mut data = vec![254; 100_000_000];
+    let mut data = vec![254; 2_000_000_000];
     let after = vec![1, 2, 3, 4];
     data.extend_from_slice(&after);
     let body_type = BodyType::Array;

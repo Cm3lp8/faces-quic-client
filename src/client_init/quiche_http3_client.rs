@@ -1,5 +1,5 @@
 use crossbeam::thread;
-use log::debug;
+use log::{debug, error, info, warn};
 //#[macro_use]
 use mio::{Interest, Token, Waker};
 use quiche::h3::NameValue;
@@ -15,6 +15,7 @@ use crate::{
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
 const WAKER_TOKEN: Token = Token(1);
+const WAKER_TOKEN_1: Token = Token(2);
 pub fn run(
     client_config: Arc<ClientConfig>,
     request_queue: RequestQueue,
@@ -27,7 +28,7 @@ pub fn run(
     //    let url = url::Url::parse(&args.next().unwrap()).unwrap();
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
-    let mut events = mio::Events::with_capacity(1024);
+    let mut events = mio::Events::with_capacity(8192);
     // Resolve server address.
     //    let peer_addr = url.to_socket_addrs().unwrap().next().unwrap();
     let peer_addr = client_config.peer_address().unwrap();
@@ -40,6 +41,7 @@ pub fn run(
     let mut socket = mio::net::UdpSocket::bind(bind_addr).unwrap();
 
     let mut waker = Some(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
+    let waker_1 = Waker::new(poll.registry(), WAKER_TOKEN_1).unwrap();
     poll.registry()
         .register(
             &mut socket,
@@ -57,13 +59,14 @@ pub fn run(
     config.set_max_idle_timeout(5000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(10_000_000);
-    config.set_initial_max_stream_data_bidi_local(1_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_000_000);
-    config.set_initial_max_stream_data_uni(1_000_000);
+    config.set_initial_max_data(50_000_000);
+    config.set_initial_max_stream_data_bidi_local(100_000_000);
+    config.set_initial_max_stream_data_bidi_remote(100_000_000);
+    config.set_initial_max_stream_data_uni(10_000_000);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::Reno);
     let mut http3_conn = None;
     // Generate a random source connection ID for the connection.
     let mut scid = [0; quiche::MAX_CONN_ID_LEN];
@@ -102,6 +105,8 @@ pub fn run(
     */
     let mut conn_confirmation = false;
     let req_start = std::time::Instant::now();
+    let mut bodies_send = 0;
+    let mut packet_send = 0;
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
         // Read incoming UDP packets from the socket and feed them to quiche,
@@ -193,13 +198,20 @@ pub fn run(
                             body_req.data(),
                             body_req.is_end(),
                         ) {
-                            debug!(
-                                "Error : Failed to send body request [{}], {:?}",
+                            error!(
+                                "Error : Failed to send body request [{}], packet [{}] {:?}",
                                 body_req.stream_id(),
+                                body_req.packet_id(),
                                 e
                             );
+                        } else {
+                            bodies_send += 1;
+                            if body_req.is_end() {
+                                info!("Success ! Request send ! [{}] chunks send", bodies_send);
+                            }
                         }
                     }
+                    Http3Request::BodyFromFile => {}
                 }
             }
         }
@@ -281,9 +293,9 @@ pub fn run(
         }
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
-        let mut packet_send = 0;
         let mut last_send = Instant::now();
-        let pacing_interval = Duration::from_micros(114);
+        let pacing_interval = Duration::from_micros(2);
+        let mut packet_thres = 0;
         loop {
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
@@ -291,28 +303,39 @@ pub fn run(
                     break;
                 }
                 Err(e) => {
-                    debug!("send failed: {:?}", e);
+                    error!("send failed: {:?}", e);
                     conn.close(false, 0x1, b"fail").ok();
                     break;
                 }
             };
             if let Err(e) = socket.send_to(&out[..write], send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    debug!("send() would block");
+                    warn!("send() would block");
                     break;
                 }
                 panic!("send() failed: {:?}", e);
             }
+            if packet_send % 10000 == 0 {
+                info!("Packets uploading... [{write}]")
+            }
+
+            packet_thres += 1;
             packet_send += 1;
-            if packet_send >= 20 {
+            if packet_thres >= 1000 {
+                if let Err(e) = waker_1.wake() {
+                    error!("wake error [{:?}]", e);
+                }
+                warn!("wake !!");
                 break;
             }
 
-            //println!("[{:?}]", &[0; 200]);
             //
             while last_send.elapsed() < pacing_interval {
                 std::thread::yield_now();
             }
+        }
+        if let Err(e) = waker_1.wake() {
+            error!("wake error [{:?}]", e);
         }
         if conn.is_closed() {
             debug!("connection closed, {:?}", conn.stats());

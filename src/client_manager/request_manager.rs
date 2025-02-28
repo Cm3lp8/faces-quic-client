@@ -3,7 +3,9 @@ pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
 pub use request_builder::{Http3Request, Http3RequestBuilder, Http3RequestConfirm};
 pub use request_format::{BodyType, H3Method};
 mod queue_builder {
-    use log::debug;
+    use std::time::{Duration, Instant};
+
+    use log::{debug, info};
     use quiche::h3::Header;
 
     use self::request_builder::BodyRequest;
@@ -39,7 +41,19 @@ mod queue_builder {
                 let mut byte_send = 0;
                 let mut packet_send = 0;
 
+                let number_of_packet = body.len() / chunk_size + {
+                    if body.len() % chunk_size == 0 {
+                        0
+                    } else {
+                        1
+                    }
+                };
+                log::info!("Sending Body in [{}] packets", number_of_packet);
+
+                let mut packet_count = 0;
+                let send_duration = Instant::now();
                 while byte_send < body.len() {
+                    std::thread::sleep(Duration::from_micros(13));
                     let end = if byte_send + chunk_size <= body.len() {
                         let end = chunk_size + byte_send;
                         debug!("bytes_send [{:?}] end[{:?}]", byte_send, end);
@@ -47,10 +61,10 @@ mod queue_builder {
 
                         let body_request = Http3Request::Body(BodyRequest::new(
                             stream_id,
+                            packet_count as usize,
                             data,
                             if end >= body.len() { true } else { false },
                         ));
-                        debug!("sending bodyReq [{:#?}]", body_request);
 
                         if let Err(e) = body_sender.send(body_request) {
                             debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
@@ -65,11 +79,11 @@ mod queue_builder {
 
                         let body_request = Http3Request::Body(BodyRequest::new(
                             stream_id,
+                            packet_count as usize,
                             data,
                             if end >= body.len() { true } else { false },
                         ));
 
-                        debug!("sending bodyReq [{:#?}]", body_request);
                         if let Err(e) = body_sender.send(body_request) {
                             debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
                             break;
@@ -77,10 +91,12 @@ mod queue_builder {
                         byte_send += body.len() - byte_send;
                         end
                     };
+
+                    packet_count += 1;
                 }
-                debug!(
-                    "Body [{}] bytes send succesfully on stream [{stream_id}] ",
-                    byte_send
+                info!(
+                    "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
+                    byte_send, packet_count, send_duration.elapsed()
                 );
             });
         }
@@ -173,6 +189,7 @@ mod request_builder {
     pub enum Http3Request {
         Body(BodyRequest),
         Header(HeaderRequest),
+        BodyFromFile,
     }
 
     impl Debug for Http3Request {
@@ -190,17 +207,20 @@ mod request_builder {
                 Self::Header(header) => {
                     write!(f, " req = header [{:#?}]", header.headers())
                 }
+                Self::BodyFromFile => write!(f, "body from file []"),
             }
         }
     }
     pub struct BodyRequest {
+        packet_id: usize,
         stream_id: u64,
         data: Vec<u8>,
         is_end: bool,
     }
     impl BodyRequest {
-        pub fn new(stream_id: u64, data: Vec<u8>, is_end: bool) -> Self {
+        pub fn new(stream_id: u64, packet_id: usize, data: Vec<u8>, is_end: bool) -> Self {
             BodyRequest {
+                packet_id,
                 stream_id,
                 data,
                 is_end,
@@ -208,6 +228,9 @@ mod request_builder {
         }
         pub fn stream_id(&self) -> u64 {
             self.stream_id
+        }
+        pub fn packet_id(&self) -> usize {
+            self.packet_id
         }
         pub fn take_data(&mut self) -> Vec<u8> {
             std::mem::replace(&mut self.data, Vec::with_capacity(1))
@@ -352,6 +375,7 @@ mod request_builder {
                     //   header request
                     Http3Request::Body(BodyRequest::new(
                         99,
+                        1,
                         std::mem::replace(&mut data, vec![]),
                         true,
                     )),
@@ -642,6 +666,7 @@ mod test {
             Http3Request::Body(_) => {
                 assert!(false)
             }
+            Http3Request::BodyFromFile => {}
         }
     }
     #[test]
@@ -723,6 +748,7 @@ mod test {
             Http3Request::Body(_) => {
                 assert!(false)
             }
+            Http3Request::BodyFromFile => {}
         }
     }
 }
