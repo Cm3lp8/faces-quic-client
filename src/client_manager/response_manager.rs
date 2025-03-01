@@ -93,6 +93,9 @@ mod queue_builder {
         head: crossbeam::channel::Sender<Http3Response>,
     }
     impl ResponseHead {
+        ///
+        ///This is the fifo channel that send every response to the response manager unit.
+        ///
         pub fn send_response(
             &self,
             response: Http3Response,
@@ -149,12 +152,48 @@ mod queue_builder {
 }
 
 mod response_builder {
-    use std::fmt::{Debug, Display};
+    use std::{
+        fmt::{Debug, Display},
+        usize,
+    };
 
-    use log::debug;
-    use quiche::h3::{self, Header};
+    use log::{debug, error, warn};
+    use quiche::h3::{self, Header, NameValue};
 
     use super::*;
+    pub struct ProgressStatus {
+        completed: usize,
+    }
+    impl ProgressStatus {
+        pub fn new(percentage_completed: usize) -> Self {
+            let value = if percentage_completed > 100 {
+                100
+            } else {
+                percentage_completed
+            };
+
+            Self { completed: value }
+        }
+        pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+            let mut progress: Option<usize> = None;
+            for key in String::from_utf8_lossy(bytes).split("%&") {
+                if let Some((label, value)) = key.split_once("=") {
+                    if let Ok(progress_value) = value.parse::<usize>() {
+                        progress = Some(progress_value);
+                    }
+                }
+            }
+
+            if let Some(value) = progress {
+                Some(ProgressStatus::new(value))
+            } else {
+                None
+            }
+        }
+        pub fn progress(&self) -> usize {
+            self.completed
+        }
+    }
 
     pub struct CompletedResponse {
         headers: Vec<h3::Header>,
@@ -221,6 +260,25 @@ mod response_builder {
                 packet.to_vec(),
                 end,
             ))
+        }
+        ///
+        ///
+        /// Return true if this server response comes from a stream open by the server
+        /// # Example
+        ///
+        /// let response: Http3Response::new(7, some_id, &[0], false);
+        /// let response_1: Http3Response::new(4, some_id, &[0], false);
+        ///
+        /// assert!(response.is_progress_status_response());
+        /// assert!(!response_1.is_progress_status_response());
+        ///
+        ///
+        ///
+        pub fn is_progress_status_response(&self) -> bool {
+            match self {
+                Self::Header(header) => header.stream_id % 4 == 3,
+                Self::Body(body) => body.stream_id % 4 == 3,
+            }
         }
         /// Create new header response type.
         /// Boolean indique if end of stream.
@@ -330,6 +388,7 @@ mod response_builder {
         stream_id: u64,
         connexion_id: String,
         packet: Vec<u8>,
+        packet_count: usize,
         end: bool,
     }
     impl Http3ResponseBody {
@@ -338,8 +397,12 @@ mod response_builder {
                 stream_id,
                 connexion_id,
                 packet,
+                packet_count: 0,
                 end,
             }
+        }
+        pub fn body_type(&self) -> BodyType {
+            BodyType::parse_packet(&self.packet)
         }
         pub fn ids(&self) -> (u64, String) {
             (self.stream_id, self.connexion_id.to_owned())
@@ -361,24 +424,66 @@ mod response_builder {
         }
     }
 
+    pub enum BodyType<'a> {
+        ProgressStatusBody(ProgressStatus),
+        Packet(&'a [u8]),
+        Err(()),
+    }
+    impl<'a> BodyType<'a> {
+        pub fn parse_packet(packet: &'a [u8]) -> Self {
+            if packet.len() < 4 {
+                return Self::Packet(packet);
+            }
+
+            let (prefix, suffix) = packet.split_at(4);
+
+            if prefix == b"s??%" {
+                if let Some(progress_status) = ProgressStatus::from_bytes(suffix) {
+                    Self::ProgressStatusBody(progress_status)
+                } else {
+                    Self::Err(())
+                }
+            } else {
+                Self::Packet(packet)
+            }
+        }
+    }
+
     pub struct WaitPeerResponse {
         stream_id: u64,
         connexion_id: String,
-        receiver: crossbeam::channel::Receiver<CompletedResponse>,
+        response_channel: crossbeam::channel::Receiver<CompletedResponse>,
+        progress_channel: crossbeam::channel::Receiver<ProgressStatus>,
     }
     impl WaitPeerResponse {
         pub fn new(
             stream_ids: &(u64, String),
-            receiver: crossbeam::channel::Receiver<CompletedResponse>,
+            response_channel: crossbeam::channel::Receiver<CompletedResponse>,
+            progress_channel: crossbeam::channel::Receiver<ProgressStatus>,
         ) -> WaitPeerResponse {
             WaitPeerResponse {
                 stream_id: stream_ids.0,
                 connexion_id: stream_ids.1.to_owned(),
-                receiver,
+                response_channel,
+                progress_channel,
             }
         }
+        pub fn with_progress_callback(
+            &self,
+            progress_cb: impl Fn(ProgressStatus) + Send + 'static,
+        ) {
+            let receiver = self.progress_channel.clone();
+            std::thread::Builder::new()
+                .stack_size(1024 * 10)
+                .spawn(move || {
+                    while let Ok(progress_status) = receiver.recv() {
+                        progress_cb(progress_status);
+                    }
+                })
+                .unwrap();
+        }
         pub fn wait_response(&self) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
-            self.receiver.recv()
+            self.response_channel.recv()
         }
     }
     #[derive(Debug)]
@@ -386,25 +491,42 @@ mod response_builder {
         stream_id: u64,
         connexion_id: String,
         headers: Option<Vec<h3::Header>>,
+        content_length: Option<usize>,
         data: Vec<u8>,
-        channel: (
+        packet_count: usize,
+        response_channel: (
             crossbeam::channel::Sender<CompletedResponse>,
             crossbeam::channel::Receiver<CompletedResponse>,
+        ),
+        progress_channel: (
+            crossbeam::channel::Sender<ProgressStatus>,
+            crossbeam::channel::Receiver<ProgressStatus>,
         ),
     }
     impl PartialResponse {
         pub fn new(
             stream_ids: &(u64, String),
-        ) -> (Self, crossbeam::channel::Receiver<CompletedResponse>) {
+        ) -> (
+            Self,
+            crossbeam::channel::Receiver<CompletedResponse>,
+            crossbeam::channel::Receiver<ProgressStatus>,
+        ) {
             let partial_response = Self {
                 stream_id: stream_ids.0,
                 connexion_id: stream_ids.1.to_owned(),
                 headers: None,
+                content_length: None,
+                packet_count: 0,
                 data: vec![],
-                channel: crossbeam::channel::bounded(1),
+                response_channel: crossbeam::channel::bounded(1),
+                progress_channel: crossbeam::channel::bounded(1),
             };
-            let receiver = partial_response.channel.1.clone();
-            (partial_response, receiver)
+            let response_receiver = partial_response.response_channel.1.clone();
+            let progress_receiver = partial_response.progress_channel.1.clone();
+            (partial_response, response_receiver, progress_receiver)
+        }
+        pub fn set_content_length(&mut self, content_length: usize) {
+            self.content_length = Some(content_length);
         }
         pub fn stream_id(&self) -> u64 {
             self.stream_id
@@ -412,13 +534,62 @@ mod response_builder {
         pub fn connexion_id(&self) -> &str {
             self.connexion_id.as_str()
         }
+        ///
+        /// On Http3Response event, this can trigger the CompletedResponse building and sending to
+        /// the client, or stack the bytes if a body is being received.
+        ///
+        /// return true if data is complete
+        ///
         pub fn extend_data(&mut self, server_packet: Http3Response) -> bool {
             let mut can_delete_in_table = false;
             match server_packet {
                 Http3Response::Header(headers) => {
+                    if let Some(_status_100) = headers
+                        .headers()
+                        .iter()
+                        .find(|hdr| hdr.name() == b":status" && hdr.value() == b"100")
+                    {
+                        if let Some(progress) = headers
+                            .headers()
+                            .iter()
+                            .find(|hdr| hdr.name() == b"x-progress")
+                        {
+                            if let Ok(len) =
+                                String::from_utf8_lossy(progress.value()).parse::<usize>()
+                            {
+                                if let Err(e) =
+                                    self.progress_channel.0.send(ProgressStatus::new(len))
+                                {
+                                    debug!(
+                        "Error: Failed sending progress status for stream_id [{}] -> [{:?}]",
+                        headers.stream_id(),
+                        e
+                    );
+                                }
+                            } else {
+                                error!("Failed parsing hdr value : not a digit");
+                            }
+                        }
+                        return false;
+                    }
                     self.headers = Some(headers.headers().to_vec());
+
+                    let content_length = if let Some(content_length) = headers
+                        .headers()
+                        .iter()
+                        .find(|hdr| hdr.name() == b"content-length")
+                    {
+                        if let Ok(len) =
+                            String::from_utf8_lossy(content_length.value()).parse::<usize>()
+                        {
+                            self.content_length = Some(len);
+                        } else {
+                            error!("not an digit");
+                        };
+                    };
+
                     if headers.is_end() {
-                        if let Err(e) = self.channel.0.send(CompletedResponse::new(
+                        if let Err(e) = self.response_channel.0.send(CompletedResponse::new(
                             self.stream_id,
                             std::mem::replace(
                                 self.headers.as_mut().unwrap(),
@@ -437,15 +608,27 @@ mod response_builder {
                     }
                 }
                 Http3Response::Body(body) => {
-                    debug!("is body");
                     if let Some(_headers) = &self.headers {
                         if body.packet.len() > 0 {
+                            self.packet_count += 1;
                             self.data.extend_from_slice(body.packet());
                             debug!("body data extended [{:?}]", body.packet.len());
                         }
 
                         if body.is_end() {
-                            if let Err(e) = self.channel.0.send(CompletedResponse::new(
+                            if let Some(total_len) = self.content_length {
+                                let percentage_completed =
+                                    ((self.data.len() as f32 / total_len as f32) * 100.0) as usize;
+
+                                if let Err(e) = self
+                                    .progress_channel
+                                    .0
+                                    .send(ProgressStatus::new(percentage_completed))
+                                {
+                                    error!("Failed sending percentage completion [{:?}]", e);
+                                }
+                            }
+                            if let Err(e) = self.response_channel.0.send(CompletedResponse::new(
                                 self.stream_id,
                                 std::mem::replace(
                                     self.headers.as_mut().unwrap(),
@@ -463,6 +646,12 @@ mod response_builder {
                             }
                         }
                     } else {
+                        if let BodyType::ProgressStatusBody(progress_status) = body.body_type() {
+                            if let Err(e) = self.progress_channel.0.send(progress_status) {
+                                error!("Failed sending percentage completion [{:?}]", e);
+                            }
+                            return false;
+                        }
                         debug!("Error : No headers found for body [{}]", body.stream_id());
                     }
                 }
@@ -477,7 +666,7 @@ mod response_manager_worker {
         sync::{Arc, Mutex},
     };
 
-    use log::debug;
+    use log::{debug, warn};
 
     use self::{
         response_builder::PartialResponse,
@@ -489,7 +678,8 @@ mod response_manager_worker {
     ///
     ///Run the partial Response table response manager
     ///
-    ///
+    /// Response queue pops the responseEvent from the server, partial_response_receiver is the
+    /// channel that receives the partial responses for registration.
     ///
     pub fn run(response_queue: ResponseQueue, partial_response_receiver: PartialResponseReceiver) {
         let partial_response_table =
@@ -505,11 +695,8 @@ mod response_manager_worker {
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
                     debug!("extending data...");
                     delete_entry = entry.extend_data(server_response);
-                } else {
-                    for table_g in table_guard.iter() {
-                        debug!("table [{:#?}]", table_g);
-                    }
                 }
+
                 if delete_entry {
                     debug!("Can delete [{stream_id}]");
                     table_guard.remove(&(stream_id, conn_id.to_owned()));

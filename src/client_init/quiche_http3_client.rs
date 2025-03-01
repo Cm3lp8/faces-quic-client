@@ -25,6 +25,7 @@ pub fn run(
 ) -> Result<String, ()> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
+    let mut last_sending_time = Duration::ZERO;
     //    let url = url::Url::parse(&args.next().unwrap()).unwrap();
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -173,7 +174,7 @@ pub fn run(
         // all requests have been sent.
         if let Some(h3_conn) = &mut http3_conn {
             let trace_id = conn.trace_id().to_string();
-            if let Some(req) = request_queue.pop_request() {
+            if let Some((req, adjust_send_timer)) = request_queue.pop_request() {
                 match req {
                     Http3Request::Header(header_req) => {
                         if let Ok(stream_id) = h3_conn.send_request(
@@ -212,6 +213,9 @@ pub fn run(
                         }
                     }
                     Http3Request::BodyFromFile => {}
+                }
+                if let Err(e) = adjust_send_timer.send(last_sending_time) {
+                    error!("Failed sending adjust_send_timer [{:?}]", e);
                 }
             }
         }
@@ -294,11 +298,15 @@ pub fn run(
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
         let mut last_send = Instant::now();
-        let pacing_interval = Duration::from_micros(2);
+        let mut pacing_interval = Duration::from_micros(1);
         let mut packet_thres = 0;
+        let mut pacing_instant = Instant::now();
         loop {
             let (write, send_info) = match conn.send(&mut out) {
-                Ok(v) => v,
+                Ok(v) => {
+                    pacing_instant = send_info.at;
+                    v
+                }
                 Err(quiche::Error::Done) => {
                     break;
                 }
@@ -315,8 +323,11 @@ pub fn run(
                 }
                 panic!("send() failed: {:?}", e);
             }
+
+            last_sending_time = send_info.at.elapsed();
+
             if packet_send % 10000 == 0 {
-                info!("Packets uploading... [{write}]")
+                debug!("Packets uploading... [{write}]")
             }
 
             packet_thres += 1;
@@ -329,10 +340,11 @@ pub fn run(
                 break;
             }
 
-            //
-            while last_send.elapsed() < pacing_interval {
-                std::thread::yield_now();
-            }
+            /*
+                        while last_send.elapsed() < pacing_interval {
+                            std::thread::yield_now();
+                        }
+            */
         }
         if let Err(e) = waker_1.wake() {
             error!("wake error [{:?}]", e);

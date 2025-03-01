@@ -1,4 +1,5 @@
 use faces_quic_client::*;
+use log::info;
 
 fn main() {
     let client_config = ClientConfig::new();
@@ -48,6 +49,7 @@ fn main() {
                 .set_user_agent("Cmlp");
         })
         .unwrap();
+    response_1.with_progress_callback(|progress| info!("progress [{} %]", progress.progress()));
 
     let mut res = response_1.wait_response().unwrap();
 

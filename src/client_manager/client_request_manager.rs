@@ -1,7 +1,10 @@
 pub use client_request_mngr::ClientRequestManager;
 
 mod client_request_mngr {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use mio::Waker;
 
@@ -107,10 +110,12 @@ mod client_request_mngr {
                     for req in &http3_request {
                         match req {
                             Http3Request::Header(header_req) => {
-                                if let Err(e) = self
-                                    .request_head
-                                    .send_request(Http3Request::Header(header_req.clone()))
-                                {
+                                let adjust_sending_duration =
+                                    crossbeam::channel::bounded::<Duration>(1);
+                                if let Err(e) = self.request_head.send_request((
+                                    Http3Request::Header(header_req.clone()),
+                                    adjust_sending_duration.0,
+                                )) {
                                     println!("Error sending header request [{:?}]", e)
                                 } else {
                                     println!("Success: sending header request");
@@ -144,11 +149,14 @@ mod client_request_mngr {
                          *
                          * */
                         if let Ok(stream_ids) = stream_ids {
-                            let (partial_response, completed_channel) =
+                            let (partial_response, completed_channel, progress_channel) =
                                 PartialResponse::new(&stream_ids);
 
-                            let peer_response =
-                                WaitPeerResponse::new(&stream_ids, completed_channel);
+                            let peer_response = WaitPeerResponse::new(
+                                &stream_ids,
+                                completed_channel,
+                                progress_channel,
+                            );
                             if let Err(e) = response_sender.send(peer_response) {
                                 println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
                             }

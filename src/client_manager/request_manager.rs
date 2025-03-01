@@ -14,19 +14,22 @@ mod queue_builder {
 
     pub struct RequestChannel {
         channel: (
-            crossbeam::channel::Sender<Http3Request>,
-            crossbeam::channel::Receiver<Http3Request>,
+            crossbeam::channel::Sender<(Http3Request, crossbeam::channel::Sender<Duration>)>,
+            crossbeam::channel::Receiver<(Http3Request, crossbeam::channel::Sender<Duration>)>,
         ),
     }
 
     pub struct RequestHead {
-        head: crossbeam::channel::Sender<Http3Request>,
+        head: crossbeam::channel::Sender<(Http3Request, crossbeam::channel::Sender<Duration>)>,
     }
     impl RequestHead {
         pub fn send_request(
             &self,
-            request: Http3Request,
-        ) -> Result<(), crossbeam::channel::SendError<Http3Request>> {
+            request: (Http3Request, crossbeam::channel::Sender<Duration>),
+        ) -> Result<
+            (),
+            crossbeam::channel::SendError<(Http3Request, crossbeam::channel::Sender<Duration>)>,
+        > {
             self.head.send(request)
         }
         ///
@@ -52,8 +55,10 @@ mod queue_builder {
 
                 let mut packet_count = 0;
                 let send_duration = Instant::now();
+                let mut sending_duration = Duration::from_micros(12);
                 while byte_send < body.len() {
-                    std::thread::sleep(Duration::from_micros(13));
+                    std::thread::sleep(sending_duration);
+                    let adjust_duration = crossbeam::channel::bounded::<Duration>(1);
                     let end = if byte_send + chunk_size <= body.len() {
                         let end = chunk_size + byte_send;
                         debug!("bytes_send [{:?}] end[{:?}]", byte_send, end);
@@ -66,7 +71,7 @@ mod queue_builder {
                             if end >= body.len() { true } else { false },
                         ));
 
-                        if let Err(e) = body_sender.send(body_request) {
+                        if let Err(e) = body_sender.send((body_request, adjust_duration.0)) {
                             debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
                             break;
                         }
@@ -84,7 +89,7 @@ mod queue_builder {
                             if end >= body.len() { true } else { false },
                         ));
 
-                        if let Err(e) = body_sender.send(body_request) {
+                        if let Err(e) = body_sender.send((body_request, adjust_duration.0)) {
                             debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
                             break;
                         }
@@ -93,6 +98,9 @@ mod queue_builder {
                     };
 
                     packet_count += 1;
+                    if let Ok(new_duration) = adjust_duration.1.recv() {
+                        sending_duration = new_duration;
+                    }
                 }
                 info!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
@@ -103,11 +111,11 @@ mod queue_builder {
     }
 
     pub struct RequestQueue {
-        queue: crossbeam::channel::Receiver<Http3Request>,
+        queue: crossbeam::channel::Receiver<(Http3Request, crossbeam::channel::Sender<Duration>)>,
     }
 
     impl RequestQueue {
-        pub fn pop_request(&self) -> Option<Http3Request> {
+        pub fn pop_request(&self) -> Option<(Http3Request, crossbeam::channel::Sender<Duration>)> {
             if let Ok(new_req) = self.queue.try_recv() {
                 debug!("sending next request [{:?}]", new_req);
                 Some(new_req)
