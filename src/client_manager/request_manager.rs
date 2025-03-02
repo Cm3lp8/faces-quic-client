@@ -103,7 +103,7 @@ mod queue_builder {
                         sending_duration = new_duration;
                     }
                 }
-                info!(
+                debug!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
                     byte_send, packet_count, send_duration.elapsed()
                 );

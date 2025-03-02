@@ -206,7 +206,7 @@ pub fn run(
                                         bodies_send += 1;
 
                                         if body_req.is_end() {
-                                            info!(
+                                            debug!(
                                                 "Success ! Request send ! [{}] chunks send\n Pending bodies send [{}]",
                                                 bodies_send, pending_count
                                             );
