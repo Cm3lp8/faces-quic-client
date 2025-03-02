@@ -1,8 +1,10 @@
+#![allow(warnings)]
 pub use body_builder::Http3Body;
 pub use body_queue_builder::{BodyChannel, BodyHead, BodyQueue};
 mod body_queue_builder {
     use super::*;
 
+    #[derive(Clone)]
     pub struct BodyChannel {
         channel: (
             crossbeam::channel::Sender<Http3Body>,
@@ -52,7 +54,6 @@ mod body_queue_builder {
 }
 
 mod body_builder {
-    use super::*;
 
     pub struct Http3Body {
         stream_id: u64,

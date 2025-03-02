@@ -83,6 +83,7 @@ mod response_mngr {
 mod queue_builder {
     use super::*;
 
+    #[derive(Clone)]
     pub struct ResponseChannel {
         channel: (
             crossbeam::channel::Sender<Http3Response>,
@@ -157,10 +158,9 @@ mod response_builder {
         usize,
     };
 
-    use log::{debug, error, warn};
+    use log::{debug, error};
     use quiche::h3::{self, Header, NameValue};
 
-    use super::*;
     pub struct ProgressStatus {
         completed: usize,
     }
@@ -177,7 +177,7 @@ mod response_builder {
         pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
             let mut progress: Option<usize> = None;
             for key in String::from_utf8_lossy(bytes).split("%&") {
-                if let Some((label, value)) = key.split_once("=") {
+                if let Some((_label, value)) = key.split_once("=") {
                     if let Ok(progress_value) = value.parse::<usize>() {
                         progress = Some(progress_value);
                     }
@@ -197,6 +197,7 @@ mod response_builder {
 
     pub struct CompletedResponse {
         headers: Vec<h3::Header>,
+        #[allow(warnings)]
         stream_id: u64,
         data: Vec<u8>,
     }
@@ -317,7 +318,7 @@ mod response_builder {
         }
         pub fn headers(&self) -> Option<Vec<h3::Header>> {
             match self {
-                Http3Response::Header(headers) => {
+                Http3Response::Header(_headers) => {
                     debug!("Not a body, is an header variant");
                     None
                 }
@@ -388,6 +389,7 @@ mod response_builder {
         stream_id: u64,
         connexion_id: String,
         packet: Vec<u8>,
+        #[allow(warnings)]
         packet_count: usize,
         end: bool,
     }
@@ -449,6 +451,7 @@ mod response_builder {
         }
     }
 
+    #[allow(warnings)]
     pub struct WaitPeerResponse {
         stream_id: u64,
         connexion_id: String,
@@ -468,10 +471,19 @@ mod response_builder {
                 progress_channel,
             }
         }
+        ///
+        ///
+        /// With ProgressStatus parameter, client can  retrieve some informations on reception status from the server.
+        ///
+        ///
+        ///
+        ///
+        ///
+        ///
         pub fn with_progress_callback(
-            &self,
+            self,
             progress_cb: impl Fn(ProgressStatus) + Send + 'static,
-        ) {
+        ) -> Self {
             let receiver = self.progress_channel.clone();
             std::thread::Builder::new()
                 .stack_size(1024 * 10)
@@ -481,6 +493,7 @@ mod response_builder {
                     }
                 })
                 .unwrap();
+            self
         }
         pub fn wait_response(&self) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
             self.response_channel.recv()
@@ -525,7 +538,7 @@ mod response_builder {
             let progress_receiver = partial_response.progress_channel.1.clone();
             (partial_response, response_receiver, progress_receiver)
         }
-        pub fn set_content_length(&mut self, content_length: usize) {
+        pub fn _set_content_length(&mut self, content_length: usize) {
             self.content_length = Some(content_length);
         }
         pub fn stream_id(&self) -> u64 {
@@ -574,7 +587,7 @@ mod response_builder {
                     }
                     self.headers = Some(headers.headers().to_vec());
 
-                    let content_length = if let Some(content_length) = headers
+                    let _content_length = if let Some(content_length) = headers
                         .headers()
                         .iter()
                         .find(|hdr| hdr.name() == b"content-length")
@@ -666,12 +679,9 @@ mod response_manager_worker {
         sync::{Arc, Mutex},
     };
 
-    use log::{debug, warn};
+    use log::debug;
 
-    use self::{
-        response_builder::PartialResponse,
-        response_mngr::{PartialResponseReceiver, PartialResponseSubmitter},
-    };
+    use self::{response_builder::PartialResponse, response_mngr::PartialResponseReceiver};
 
     use super::*;
 

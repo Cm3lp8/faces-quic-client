@@ -2,15 +2,12 @@ mod quiche_http3_client;
 pub use http3_client::Http3Client;
 
 mod http3_client {
-    use std::{
-        clone,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use mio::Waker;
 
     use crate::{
-        client_config::{self, ClientConfig},
+        client_config::ClientConfig,
         client_manager::{BodyQueue, RequestQueue, ResponseHead},
     };
 

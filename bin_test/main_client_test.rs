@@ -2,60 +2,22 @@ use faces_quic_client::*;
 use log::info;
 
 fn main() {
-    let client_config = ClientConfig::new();
     env_logger::init();
 
-    println!("Create config...");
-    client_config
-        .connexion_infos()
-        .set_peer_address("127.0.0.1:3000")
-        .set_local_address("0.0.0.0:0")
-        .build_connexion_infos();
+    let peer = "127.0.0.1:3000";
+    println!("Connect to [{}]", peer);
 
-    println!("Connect to 127.0.0.1:3000");
+    let client = Http3ClientManager::new(peer);
 
-    let http3_client_manager = Http3ClientManager::new(client_config);
-
-    let req_manager = http3_client_manager.request_manager();
-
-    /*
-        let response_0 = req_manager
-            .new_request(|req_builder| {
-                req_builder
-                    .set_method(H3Method::GET)
-                    .set_path("/")
-                    .set_user_agent("Camille");
-            })
-            .unwrap();
-
-        let mut res = response_0.wait_response().unwrap();
-
-        println!("[{}]", res);
-
-        let data = res.take_data();
-
-        println!("[{}]", String::from_utf8_lossy(&data));
-        println!("Second req");
-    */
-    let mut data = vec![254; 2_000_000_000];
-    let after = vec![1, 2, 3, 4];
-    data.extend_from_slice(&after);
-    let body_type = BodyType::Array;
-    let response_1 = req_manager
-        .new_request(|req_builder| {
-            req_builder
-                .set_method(H3Method::POST { data, body_type })
-                .set_path("/large_data")
-                .set_user_agent("Cmlp");
+    let res = client
+        .new_request(|req| {
+            req.post("/large_data", vec![22; 1000000_000], BodyType::Array)
+                .set_user_agent("camille");
         })
-        .unwrap();
-    response_1.with_progress_callback(|progress| info!("progress [{} %]", progress.progress()));
+        .unwrap()
+        .with_progress_callback(|progress| info!("some proress [{:?}]", progress.progress()));
 
-    let mut res = response_1.wait_response().unwrap();
+    let res = res.wait_response().unwrap();
 
     println!("[{}]", res);
-
-    let data = res.take_data();
-
-    println!("rec [{:?}]", String::from_utf8_lossy(&data[..]));
 }

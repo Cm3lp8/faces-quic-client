@@ -12,6 +12,7 @@ mod queue_builder {
 
     use super::*;
 
+    #[derive(Clone)]
     pub struct RequestChannel {
         channel: (
             crossbeam::channel::Sender<(Http3Request, crossbeam::channel::Sender<Duration>)>,
@@ -311,6 +312,7 @@ mod request_builder {
                 scheme: None,
                 user_agent: None,
                 authority: peer_socket_address,
+                custom_headers: None,
             }
         }
     }
@@ -322,19 +324,35 @@ mod request_builder {
         scheme: Option<&'static str>,
         user_agent: Option<&'static str>,
         authority: Option<SocketAddr>,
+        custom_headers: Option<Vec<(&'static str, &'static str)>>,
     }
 
     impl Http3RequestBuilder {
-        pub fn set_method(&mut self, method: H3Method) -> &mut Self {
-            self.method = Some(method);
+        pub fn post(
+            &mut self,
+            path: &'static str,
+            data: Vec<u8>,
+            body_type: BodyType,
+        ) -> &mut Self {
+            self.method = Some(H3Method::POST { data, body_type });
+            self.path = Some(path);
             self
         }
-        pub fn set_path(&mut self, path: &'static str) -> &mut Self {
+        pub fn get(&mut self, path: &'static str) -> &mut Self {
+            self.method = Some(H3Method::GET);
             self.path = Some(path);
             self
         }
         pub fn set_user_agent(&mut self, user_agent: &'static str) -> &mut Self {
             self.user_agent = Some(user_agent);
+            self
+        }
+        pub fn set_header(&mut self, name: &'static str, value: &'static str) -> &mut Self {
+            if let None = self.custom_headers {
+                self.custom_headers = Some(vec![(name, value)]);
+            } else {
+                self.custom_headers.as_mut().unwrap().push((name, value));
+            }
             self
         }
         pub fn build(&mut self) -> Result<(Vec<Http3Request>, Option<Http3RequestConfirm>), ()> {
@@ -604,8 +622,7 @@ mod test {
         let data_len = data.len();
         let body_type = BodyType::Ping;
         let request = new_request
-            .set_method(request_format::H3Method::POST { data, body_type })
-            .set_path("/post")
+            .post("/post", data, body_type)
             .set_user_agent("Camille")
             .build();
 
@@ -685,11 +702,7 @@ mod test {
         let mut new_request: Http3RequestBuilder =
             Http3Request::new(Some(SocketAddr::from_str("127.0.0.1:3000").unwrap()));
 
-        let request = new_request
-            .set_method(request_format::H3Method::GET)
-            .set_path("/get")
-            .set_user_agent("Camille")
-            .build();
+        let request = new_request.get("/path").set_user_agent("Camille").build();
 
         assert!(request.is_ok());
 

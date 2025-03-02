@@ -1,8 +1,7 @@
-use crossbeam::thread;
 use log::{debug, error, info, warn};
 //#[macro_use]
-use mio::{Events, Interest, Token, Waker};
-use quiche::h3::{self, NameValue};
+use mio::{Events, Token, Waker};
+use quiche::h3::{self};
 use ring::rand::*;
 use std::{
     collections::HashMap,
@@ -22,7 +21,7 @@ pub fn run(
     client_config: Arc<ClientConfig>,
     request_queue: RequestQueue,
     response_queue: ResponseHead,
-    body_queue: BodyQueue,
+    _body_queue: BodyQueue,
     confirm_connexion: crossbeam::channel::Sender<(String, Waker)>,
 ) -> Result<String, ()> {
     let mut buf = [0; 65535];
@@ -111,50 +110,16 @@ pub fn run(
     let mut conn_confirmation = false;
     let req_start = std::time::Instant::now();
     let mut bodies_send = 0;
+    let mut pending_count = 0;
     let mut packet_send = 0;
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
         handle_incoming_packets(&events, &mut conn, &socket, &mut buf, local_addr);
-        /*
-        'read: loop {
-            // If the event loop reported no events, it means that the timeout
-            // has expired, so handle it without attempting to read packets. We
-            // will then proceed with the send loop.
-            if events.is_empty() {
-                //             debug!("timed out");
-                conn.on_timeout();
-                break 'read;
-            }
-            let (len, from) = match socket.recv_from(&mut buf) {
-                Ok(v) => v,
-                Err(e) => {
-                    // There are no more UDP packets to read, so end the read
-                    // loop.
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("recv() would block");
-                        break 'read;
-                    }
-                    panic!("recv() failed: {:?}", e);
-                }
-            };
-            let recv_info = quiche::RecvInfo {
-                to: local_addr,
-                from,
-            };
-            // Process potentially coalesced packets.
-            let read = match conn.recv(&mut buf[..len], recv_info) {
-                Ok(v) => v,
-                Err(e) => {
-                    debug!("recv failed: {:?}", e);
-                    continue 'read;
-                }
-            };
-        }
-        */
+
         if conn.is_closed() {
-            debug!("connection closed, {:?}", conn.stats());
+            warn!("connection closed haut de loop, {:?}", conn.stats());
             break Ok(conn.trace_id().to_owned());
         }
         // Create a new HTTP/3 connection once the QUIC connection is established.
@@ -179,8 +144,6 @@ pub fn run(
         }
         //handle writable
 
-        // Send HTTP requests once the QUIC connection is established, and until
-        // all requests have been sent.
         if let Some(h3_conn) = &mut http3_conn {
             for stream_id in conn.writable() {
                 handle_writable(
@@ -199,6 +162,8 @@ pub fn run(
                 );
             }
 
+            // Send HTTP requests once the QUIC connection is established, and until
+            // all requests have been sent.
             let trace_id = conn.trace_id().to_string();
             if let Some((req, adjust_send_timer)) = request_queue.pop_request() {
                 match req {
@@ -228,6 +193,8 @@ pub fn run(
                                     .entry(body_req.stream_id())
                                     .or_default()
                                     .push((body_req.take_data(), body_req.is_end()));
+                                pending_count += 1;
+                                continue;
                             } else {
                                 match h3_conn.send_body(
                                     &mut conn,
@@ -235,13 +202,13 @@ pub fn run(
                                     body_req.data(),
                                     body_req.is_end(),
                                 ) {
-                                    Ok(v) => {
+                                    Ok(_v) => {
                                         bodies_send += 1;
 
                                         if body_req.is_end() {
                                             info!(
-                                                "Success ! Request send ! [{}] chunks send",
-                                                bodies_send
+                                                "Success ! Request send ! [{}] chunks send\n Pending bodies send [{}]",
+                                                bodies_send, pending_count
                                             );
                                         }
                                     }
@@ -274,13 +241,6 @@ pub fn run(
             loop {
                 match http3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
-                        /*
-                                                debug!(
-                                                    "got response headers {:?} on stream id {}",
-                                                    hdrs_to_strings(&list),
-                                                    stream_id
-                                                );
-                        */
                         if let Err(e) = response_queue.send_response(Http3Response::new_header(
                             stream_id,
                             trace_id.clone(),
@@ -295,12 +255,6 @@ pub fn run(
                     }
                     Ok((stream_id, quiche::h3::Event::Data)) => {
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
-                            /*
-                                                        debug!(
-                                                            "got {} bytes of response data on stream {}",
-                                                            read, stream_id
-                                                        );
-                            */
                             if let Err(e) =
                                 response_queue.send_response(Http3Response::new_body_data(
                                     stream_id,
@@ -347,7 +301,7 @@ pub fn run(
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
         //
-        let w = handle_outgoing_packets(
+        let _w = handle_outgoing_packets(
             &mut conn,
             &socket,
             &mut out,
@@ -356,7 +310,7 @@ pub fn run(
             &mut packet_send,
         );
         if conn.is_closed() {
-            debug!("connection closed, {:?}", conn.stats());
+            warn!("connection closed, {:?}", conn.stats());
             break Ok(conn.trace_id().to_owned());
         }
     }
@@ -366,6 +320,7 @@ fn hex_dump(buf: &[u8]) -> String {
     let vec: Vec<String> = buf.iter().map(|b| format!("{b:02x}")).collect();
     vec.join("")
 }
+/*
 pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
     hdrs.iter()
         .map(|h| {
@@ -375,6 +330,7 @@ pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
         })
         .collect()
 }
+*/
 fn handle_incoming_packets_purge(
     conn: &mut quiche::Connection,
     socket: &mio::net::UdpSocket,
@@ -402,7 +358,7 @@ fn handle_incoming_packets_purge(
             from,
         };
         // Process potentially coalesced packets.
-        let read = match conn.recv(&mut buf[..len], recv_info) {
+        let _read = match conn.recv(&mut buf[..len], recv_info) {
             Ok(v) => v,
             Err(e) => {
                 debug!("recv failed: {:?}", e);
@@ -444,7 +400,7 @@ fn handle_incoming_packets(
             from,
         };
         // Process potentially coalesced packets.
-        let read = match conn.recv(&mut buf[..len], recv_info) {
+        let _read = match conn.recv(&mut buf[..len], recv_info) {
             Ok(v) => v,
             Err(e) => {
                 debug!("recv failed: {:?}", e);
@@ -460,18 +416,11 @@ fn handle_outgoing_packets_purge(
     last_sending_time: &mut Duration,
     packet_send: &mut i32,
 ) -> bool {
-    let mut last_send = Instant::now();
-    let mut pacing_interval = Duration::from_micros(1);
-    let mut packet_thres = 0;
-    let mut written = 0;
     let mut done = false;
     while !done {
         let pacing_instant = Instant::now();
         let (write, send_info) = match conn.send(out) {
-            Ok(v) => {
-                written += v.0;
-                v
-            }
+            Ok(v) => v,
             Err(quiche::Error::Done) => {
                 done = true;
                 break;
@@ -489,7 +438,6 @@ fn handle_outgoing_packets_purge(
             }
             panic!("send() failed: {:?}", e);
         }
-        written += write;
 
         *last_sending_time = send_info.at.elapsed();
 
@@ -497,7 +445,6 @@ fn handle_outgoing_packets_purge(
             debug!("Packets uploading... [{write}]")
         }
 
-        packet_thres += 1;
         *packet_send += 1;
 
         /*
@@ -519,10 +466,7 @@ fn handle_outgoing_packets(
     last_sending_time: &mut Duration,
     packet_send: &mut i32,
 ) -> Result<usize, ()> {
-    let mut last_send = Instant::now();
-    let mut pacing_interval = Duration::from_micros(1);
     let mut packet_thres = 0;
-    let mut pacing_instant = Instant::now();
     let mut written = 0;
     loop {
         let (write, send_info) = match conn.send(out) {
@@ -576,7 +520,7 @@ fn handle_outgoing_packets(
 
 fn handle_writable(
     in_buf: &mut [u8],
-    events: &Events,
+    _events: &Events,
     local_addr: SocketAddr,
     h3_conn: &mut h3::Connection,
     stream_id: u64,
@@ -585,7 +529,7 @@ fn handle_writable(
     socket: &mio::net::UdpSocket,
     out: &mut [u8],
     last_sending_time: &mut Duration,
-    waker_1: &Waker,
+    _waker_1: &Waker,
     packet_send: &mut i32,
 ) {
     'purge: loop {
@@ -621,12 +565,12 @@ fn handle_writable(
                             }
                         }
                         Err(h3::Error::StreamBlocked) => {
-                            error!("stream blocked");
+                            debug!("stream blocked");
                             new_position_index = Some(i);
                             break;
                         }
                         Err(e) => {
-                            error!(
+                            debug!(
                                 "[{:?}] index {i} coll [{}] packetlen [{}]",
                                 e,
                                 body.len(),

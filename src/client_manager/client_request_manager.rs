@@ -6,21 +6,18 @@ mod client_request_mngr {
         time::Duration,
     };
 
+    use log::warn;
     use mio::Waker;
 
     use crate::{
         client_config::ConnexionInfos,
         client_init::Http3Client,
         client_manager::{
-            request_manager::{
-                Http3Request, Http3RequestBuilder, Http3RequestConfirm, RequestHead,
-            },
-            response_manager::{Http3Response, PartialResponse, ResponseManager, WaitPeerResponse},
-            BodyHead, RequestQueue, ResponseQueue,
+            request_manager::{Http3Request, Http3RequestBuilder, RequestHead},
+            response_manager::{PartialResponse, ResponseManager, WaitPeerResponse},
+            BodyHead, ResponseQueue,
         },
     };
-
-    use super::*;
 
     ///
     ///Interface with the client. Create a new request, send data from here.

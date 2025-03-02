@@ -15,9 +15,9 @@ mod client_management {
 
     use std::sync::Arc;
 
-    use crate::client_config::ClientConfig;
+    use crate::client_config::{self, ClientConfig};
 
-    use self::{request_manager::RequestHead, response_manager::ResponseHead};
+    use self::{request_manager::Http3RequestBuilder, response_manager::WaitPeerResponse};
 
     use super::*;
 
@@ -30,6 +30,19 @@ mod client_management {
         http3_client: Arc<Http3Client>,
     }
 
+    impl Clone for Http3ClientManager {
+        fn clone(&self) -> Self {
+            Self {
+                request_channel: self.request_channel.clone(),
+                response_channel: self.response_channel.clone(),
+                body_channel: self.body_channel.clone(),
+                request_manager: self.request_manager.clone(),
+                connexion_infos: self.connexion_infos.clone(),
+                http3_client: self.http3_client.clone(),
+            }
+        }
+    }
+
     impl Http3ClientManager {
         ///
         ///Create the Http3ClientManager instance. It is the main interface to the quiche client.
@@ -37,7 +50,13 @@ mod client_management {
         ///
         ///ConnexionInfos can be modified with new_connect_infos()
         ///
-        pub fn new(client_config: ClientConfig) -> Self {
+        pub fn new(peer_socket_address: &str) -> Self {
+            let client_config = ClientConfig::new();
+            client_config
+                .connexion_infos()
+                .set_peer_address(peer_socket_address)
+                .set_local_address("0.0.0.0:0")
+                .build_connexion_infos();
             let request_channel = RequestChannel::new();
             let response_channel = ResponseChannel::new();
             let body_channel = BodyChannel::new();
@@ -65,6 +84,16 @@ mod client_management {
                 connexion_infos: client_config.connexion_infos(),
                 http3_client: http3_client_arc_clone,
             }
+        }
+        pub fn builder() -> () {
+            ()
+        }
+
+        pub fn new_request(
+            &self,
+            request_builder: impl FnOnce(&mut Http3RequestBuilder),
+        ) -> Result<WaitPeerResponse, ()> {
+            self.request_manager.new_request(request_builder)
         }
 
         pub fn new_connect_infos(&self, new_client_config: ClientConfig) -> &Self {
