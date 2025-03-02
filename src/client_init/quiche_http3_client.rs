@@ -1,10 +1,12 @@
 use crossbeam::thread;
 use log::{debug, error, info, warn};
 //#[macro_use]
-use mio::{Interest, Token, Waker};
-use quiche::h3::NameValue;
+use mio::{Events, Interest, Token, Waker};
+use quiche::h3::{self, NameValue};
 use ring::rand::*;
 use std::{
+    collections::HashMap,
+    net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -26,6 +28,8 @@ pub fn run(
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
     let mut last_sending_time = Duration::ZERO;
+    // Cache the pending bodies if conn isn't writable
+    let mut pending_bodies: HashMap<u64, Vec<(Vec<u8>, bool)>> = HashMap::new();
     //    let url = url::Url::parse(&args.next().unwrap()).unwrap();
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -112,6 +116,8 @@ pub fn run(
         poll.poll(&mut events, conn.timeout()).unwrap();
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
+        handle_incoming_packets(&events, &mut conn, &socket, &mut buf, local_addr);
+        /*
         'read: loop {
             // If the event loop reported no events, it means that the timeout
             // has expired, so handle it without attempting to read packets. We
@@ -146,6 +152,7 @@ pub fn run(
                 }
             };
         }
+        */
         if conn.is_closed() {
             debug!("connection closed, {:?}", conn.stats());
             break Ok(conn.trace_id().to_owned());
@@ -170,9 +177,28 @@ pub fn run(
                 conn_confirmation = true;
             }
         }
+        //handle writable
+
         // Send HTTP requests once the QUIC connection is established, and until
         // all requests have been sent.
         if let Some(h3_conn) = &mut http3_conn {
+            for stream_id in conn.writable() {
+                handle_writable(
+                    &mut buf,
+                    &events,
+                    local_addr,
+                    h3_conn,
+                    stream_id,
+                    &mut conn,
+                    &mut pending_bodies,
+                    &socket,
+                    &mut out,
+                    &mut last_sending_time,
+                    &waker_1,
+                    &mut packet_send,
+                );
+            }
+
             let trace_id = conn.trace_id().to_string();
             if let Some((req, adjust_send_timer)) = request_queue.pop_request() {
                 match req {
@@ -191,31 +217,54 @@ pub fn run(
                             }
                         }
                     }
-                    Http3Request::Body(body_req) => {
+                    Http3Request::Body(mut body_req) => {
                         debug!("sending body succes [{:?}]", body_req.data().len());
-                        if let Err(e) = h3_conn.send_body(
-                            &mut conn,
-                            body_req.stream_id(),
-                            body_req.data(),
-                            body_req.is_end(),
-                        ) {
-                            error!(
-                                "Error : Failed to send body request [{}], packet [{}] {:?}",
-                                body_req.stream_id(),
-                                body_req.packet_id(),
-                                e
-                            );
-                        } else {
-                            bodies_send += 1;
-                            if body_req.is_end() {
-                                info!("Success ! Request send ! [{}] chunks send", bodies_send);
+
+                        if let Ok(can_write) =
+                            conn.stream_writable(body_req.stream_id(), body_req.len())
+                        {
+                            if !can_write {
+                                pending_bodies
+                                    .entry(body_req.stream_id())
+                                    .or_default()
+                                    .push((body_req.take_data(), body_req.is_end()));
+                            } else {
+                                match h3_conn.send_body(
+                                    &mut conn,
+                                    body_req.stream_id(),
+                                    body_req.data(),
+                                    body_req.is_end(),
+                                ) {
+                                    Ok(v) => {
+                                        bodies_send += 1;
+
+                                        if body_req.is_end() {
+                                            info!(
+                                                "Success ! Request send ! [{}] chunks send",
+                                                bodies_send
+                                            );
+                                        }
+                                    }
+                                    Err(quiche::h3::Error::StreamBlocked) => {
+                                        error!("StreamBlocked !!")
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                    "Error : Failed to send body request [{}], packet [{}] {:?}",
+                                    body_req.stream_id(),
+                                    body_req.packet_id(),
+                                    e
+                                );
+                                    }
+                                }
                             }
                         }
                     }
+
                     Http3Request::BodyFromFile => {}
                 }
                 if let Err(e) = adjust_send_timer.send(last_sending_time) {
-                    error!("Failed sending adjust_send_timer [{:?}]", e);
+                    warn!("Failed sending adjust_send_timer [{:?}]", e);
                 }
             }
         }
@@ -297,64 +346,22 @@ pub fn run(
         }
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
-        let mut last_send = Instant::now();
-        let mut pacing_interval = Duration::from_micros(1);
-        let mut packet_thres = 0;
-        let mut pacing_instant = Instant::now();
-        loop {
-            let (write, send_info) = match conn.send(&mut out) {
-                Ok(v) => {
-                    pacing_instant = send_info.at;
-                    v
-                }
-                Err(quiche::Error::Done) => {
-                    break;
-                }
-                Err(e) => {
-                    error!("send failed: {:?}", e);
-                    conn.close(false, 0x1, b"fail").ok();
-                    break;
-                }
-            };
-            if let Err(e) = socket.send_to(&out[..write], send_info.to) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    warn!("send() would block");
-                    break;
-                }
-                panic!("send() failed: {:?}", e);
-            }
-
-            last_sending_time = send_info.at.elapsed();
-
-            if packet_send % 10000 == 0 {
-                debug!("Packets uploading... [{write}]")
-            }
-
-            packet_thres += 1;
-            packet_send += 1;
-            if packet_thres >= 1000 {
-                if let Err(e) = waker_1.wake() {
-                    error!("wake error [{:?}]", e);
-                }
-                warn!("wake !!");
-                break;
-            }
-
-            /*
-                        while last_send.elapsed() < pacing_interval {
-                            std::thread::yield_now();
-                        }
-            */
-        }
-        if let Err(e) = waker_1.wake() {
-            error!("wake error [{:?}]", e);
-        }
+        //
+        let w = handle_outgoing_packets(
+            &mut conn,
+            &socket,
+            &mut out,
+            &waker_1,
+            &mut last_sending_time,
+            &mut packet_send,
+        );
         if conn.is_closed() {
             debug!("connection closed, {:?}", conn.stats());
             break Ok(conn.trace_id().to_owned());
         }
     }
 }
+
 fn hex_dump(buf: &[u8]) -> String {
     let vec: Vec<String> = buf.iter().map(|b| format!("{b:02x}")).collect();
     vec.join("")
@@ -367,4 +374,283 @@ pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
             (name, value)
         })
         .collect()
+}
+fn handle_incoming_packets_purge(
+    conn: &mut quiche::Connection,
+    socket: &mio::net::UdpSocket,
+    buf: &mut [u8],
+    local_addr: SocketAddr,
+) {
+    'read: loop {
+        // If the event loop reported no events, it means that the timeout
+        // has expired, so handle it without attempting to read packets. We
+        // will then proceed with the send loop.
+        let (len, from) = match socket.recv_from(buf) {
+            Ok(v) => v,
+            Err(e) => {
+                // There are no more UDP packets to read, so end the read
+                // loop.
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    debug!("recv() would block");
+                    break 'read;
+                }
+                panic!("recv() failed: {:?}", e);
+            }
+        };
+        let recv_info = quiche::RecvInfo {
+            to: local_addr,
+            from,
+        };
+        // Process potentially coalesced packets.
+        let read = match conn.recv(&mut buf[..len], recv_info) {
+            Ok(v) => v,
+            Err(e) => {
+                debug!("recv failed: {:?}", e);
+                continue 'read;
+            }
+        };
+    }
+}
+fn handle_incoming_packets(
+    events: &Events,
+    conn: &mut quiche::Connection,
+    socket: &mio::net::UdpSocket,
+    buf: &mut [u8],
+    local_addr: SocketAddr,
+) {
+    'read: loop {
+        // If the event loop reported no events, it means that the timeout
+        // has expired, so handle it without attempting to read packets. We
+        // will then proceed with the send loop.
+        if events.is_empty() {
+            //             debug!("timed out");
+            conn.on_timeout();
+            break 'read;
+        }
+        let (len, from) = match socket.recv_from(buf) {
+            Ok(v) => v,
+            Err(e) => {
+                // There are no more UDP packets to read, so end the read
+                // loop.
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    debug!("recv() would block");
+                    break 'read;
+                }
+                panic!("recv() failed: {:?}", e);
+            }
+        };
+        let recv_info = quiche::RecvInfo {
+            to: local_addr,
+            from,
+        };
+        // Process potentially coalesced packets.
+        let read = match conn.recv(&mut buf[..len], recv_info) {
+            Ok(v) => v,
+            Err(e) => {
+                debug!("recv failed: {:?}", e);
+                continue 'read;
+            }
+        };
+    }
+}
+fn handle_outgoing_packets_purge(
+    conn: &mut quiche::Connection,
+    socket: &mio::net::UdpSocket,
+    out: &mut [u8],
+    last_sending_time: &mut Duration,
+    packet_send: &mut i32,
+) -> bool {
+    let mut last_send = Instant::now();
+    let mut pacing_interval = Duration::from_micros(1);
+    let mut packet_thres = 0;
+    let mut written = 0;
+    let mut done = false;
+    while !done {
+        let pacing_instant = Instant::now();
+        let (write, send_info) = match conn.send(out) {
+            Ok(v) => {
+                written += v.0;
+                v
+            }
+            Err(quiche::Error::Done) => {
+                done = true;
+                break;
+            }
+            Err(e) => {
+                error!("send failed: {:?}", e);
+                conn.close(false, 0x1, b"fail").ok();
+                break;
+            }
+        };
+        if let Err(e) = socket.send_to(&out[..write], send_info.to) {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                debug!("send() would block");
+                break;
+            }
+            panic!("send() failed: {:?}", e);
+        }
+        written += write;
+
+        *last_sending_time = send_info.at.elapsed();
+
+        if *packet_send % 10000 == 0 {
+            debug!("Packets uploading... [{write}]")
+        }
+
+        packet_thres += 1;
+        *packet_send += 1;
+
+        /*
+                    while last_send.elapsed() < pacing_interval {
+                        std::thread::yield_now();
+                    }
+        */
+        while pacing_instant.elapsed() < *last_sending_time {
+            std::thread::yield_now();
+        }
+    }
+    done
+}
+fn handle_outgoing_packets(
+    conn: &mut quiche::Connection,
+    socket: &mio::net::UdpSocket,
+    out: &mut [u8],
+    waker_1: &Waker,
+    last_sending_time: &mut Duration,
+    packet_send: &mut i32,
+) -> Result<usize, ()> {
+    let mut last_send = Instant::now();
+    let mut pacing_interval = Duration::from_micros(1);
+    let mut packet_thres = 0;
+    let mut pacing_instant = Instant::now();
+    let mut written = 0;
+    loop {
+        let (write, send_info) = match conn.send(out) {
+            Ok(v) => {
+                written += v.0;
+                v
+            }
+            Err(quiche::Error::Done) => {
+                break;
+            }
+            Err(e) => {
+                error!("send failed: {:?}", e);
+                conn.close(false, 0x1, b"fail").ok();
+                break;
+            }
+        };
+        if let Err(e) = socket.send_to(&out[..write], send_info.to) {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                debug!("send() would block");
+                break;
+            }
+            panic!("send() failed: {:?}", e);
+        }
+
+        *last_sending_time = send_info.at.elapsed();
+
+        if *packet_send % 10000 == 0 {
+            debug!("Packets uploading... [{write}]")
+        }
+
+        packet_thres += 1;
+        *packet_send += 1;
+        if packet_thres >= 1000 {
+            if let Err(e) = waker_1.wake() {
+                error!("wake error [{:?}]", e);
+            }
+            break;
+        }
+
+        /*
+                    while last_send.elapsed() < pacing_interval {
+                        std::thread::yield_now();
+                    }
+        */
+    }
+    if let Err(e) = waker_1.wake() {
+        error!("wake error [{:?}]", e);
+    }
+    Ok(written)
+}
+
+fn handle_writable(
+    in_buf: &mut [u8],
+    events: &Events,
+    local_addr: SocketAddr,
+    h3_conn: &mut h3::Connection,
+    stream_id: u64,
+    conn: &mut quiche::Connection,
+    pending_map: &mut HashMap<u64, Vec<(Vec<u8>, bool)>>,
+    socket: &mio::net::UdpSocket,
+    out: &mut [u8],
+    last_sending_time: &mut Duration,
+    waker_1: &Waker,
+    packet_send: &mut i32,
+) {
+    'purge: loop {
+        let mut new_position_index: Option<usize> = None;
+        if let Some(mut bodies_coll) = pending_map.remove(&stream_id) {
+            handle_incoming_packets_purge(conn, socket, in_buf, local_addr);
+            let len = bodies_coll.len();
+            let mut can_write = true;
+            for (i, (body, is_end)) in bodies_coll.iter_mut().enumerate() {
+                if body.is_empty() {
+                    continue;
+                }
+
+                if let Ok(write) = conn.stream_writable(stream_id, body.len()) {
+                    can_write = write;
+                }
+
+                if can_write {
+                    match h3_conn.send_body(conn, stream_id, &body, *is_end) {
+                        Ok(v) => {
+                            debug!(
+                                " sending data =[{}/{}] (len_send/total_len)  in store [{}]",
+                                v,
+                                body.len(),
+                                len
+                            );
+                            if v == body.len() {
+                                *body = vec![];
+                            }
+                            if v < body.len() {
+                                new_position_index = Some(i);
+                                body.drain(..v);
+                            }
+                        }
+                        Err(h3::Error::StreamBlocked) => {
+                            error!("stream blocked");
+                            new_position_index = Some(i);
+                            break;
+                        }
+                        Err(e) => {
+                            error!(
+                                "[{:?}] index {i} coll [{}] packetlen [{}]",
+                                e,
+                                body.len(),
+                                bodies_coll.len()
+                            );
+
+                            new_position_index = Some(i);
+                            break;
+                        }
+                    }
+                } else {
+                    new_position_index = Some(i);
+                    break;
+                }
+            }
+
+            //insert one more time the pending bodies collection in the table, minus ones that have
+            //been succesfully send.
+            if let Some(new_start_index) = new_position_index {
+                pending_map.insert(stream_id, bodies_coll[new_start_index..].to_vec());
+            }
+        }
+        if handle_outgoing_packets_purge(conn, socket, out, last_sending_time, packet_send) {
+            break 'purge;
+        }
+    }
 }

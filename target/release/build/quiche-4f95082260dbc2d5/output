@@ -29,11 +29,11 @@ running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build
 -- Detecting CXX compile features - done
 -- The ASM compiler identification is GNU
 -- Found assembler: /usr/bin/cc
--- Configuring done (0.3s)
+-- Configuring done (0.7s)
 -- Generating done (0.1s)
 -- Build files have been written to: /home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build
-running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=9,10 --jobserver-auth=9,10" "cmake" "--build" "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" "--target" "ssl" "--config" "Release"
-[  7%] Building CXX object CMakeFiles/ssl.dir/src/ssl/bio_ssl.cc.o
+running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=8,9 --jobserver-auth=8,9" "cmake" "--build" "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" "--target" "ssl" "--config" "Release"
+[  0%] Building CXX object CMakeFiles/ssl.dir/src/ssl/bio_ssl.cc.o
 [  7%] Building CXX object CMakeFiles/ssl.dir/src/ssl/d1_both.cc.o
 [  7%] Building CXX object CMakeFiles/ssl.dir/src/ssl/d1_lib.cc.o
 [  7%] Building CXX object CMakeFiles/ssl.dir/src/ssl/d1_pkt.cc.o
@@ -75,24 +75,24 @@ running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build
 cargo:root=/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out
 running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" && CMAKE_PREFIX_PATH="" LC_ALL="C" "cmake" "/home/camille/.cargo/registry/src/index.crates.io-6f17d22bba15001f/quiche-0.23.2/deps/boringssl" "-DCMAKE_INSTALL_PREFIX=/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out" "-DCMAKE_C_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64" "-DCMAKE_C_COMPILER=/usr/bin/cc" "-DCMAKE_CXX_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64" "-DCMAKE_CXX_COMPILER=/usr/bin/c++" "-DCMAKE_ASM_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64" "-DCMAKE_ASM_COMPILER=/usr/bin/cc" "-DCMAKE_BUILD_TYPE=Release"
 -- Configuring done (0.0s)
--- Generating done (0.1s)
+-- Generating done (0.0s)
 -- Build files have been written to: /home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build
-running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=9,10 --jobserver-auth=9,10" "cmake" "--build" "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" "--target" "crypto" "--config" "Release"
-[  1%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/cipher_extra/aes128gcmsiv-x86_64.S.o
+running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=8,9 --jobserver-auth=8,9" "cmake" "--build" "/home/camille/Documents/rust/faces-quic-client/target/release/build/quiche-4f95082260dbc2d5/out/build" "--target" "crypto" "--config" "Release"
 [  1%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/chacha/chacha-x86_64.S.o
+[  1%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/cipher_extra/aes128gcmsiv-x86_64.S.o
 [  1%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/cipher_extra/chacha20_poly1305_x86_64.S.o
 [  2%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/aesni-gcm-x86_64.S.o
 [  2%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/aesni-x86_64.S.o
+[  2%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/ghash-ssse3-x86_64.S.o
 [  3%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/ghash-x86_64.S.o
-[  3%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/ghash-ssse3-x86_64.S.o
 [  3%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/md5-x86_64.S.o
 [  3%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/p256-x86_64-asm.S.o
 [  4%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/p256_beeu-x86_64-asm.S.o
 [  4%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/rdrand-x86_64.S.o
 [  4%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/rsaz-avx2.S.o
 [  6%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/sha1-x86_64.S.o
-[  6%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/sha256-x86_64.S.o
 [  6%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/sha512-x86_64.S.o
+[  6%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/sha256-x86_64.S.o
 [  7%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/vpaes-x86_64.S.o
 [  7%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/x86_64-mont.S.o
 [  7%] Building ASM object CMakeFiles/crypto.dir/linux-x86_64/crypto/fipsmodule/x86_64-mont5.S.o
@@ -204,8 +204,8 @@ running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build
 [ 50%] Building C object CMakeFiles/crypto.dir/src/crypto/evp/scrypt.c.o
 [ 50%] Building C object CMakeFiles/crypto.dir/src/crypto/evp/sign.c.o
 [ 50%] Building C object CMakeFiles/crypto.dir/src/crypto/ex_data.c.o
-[ 50%] Building C object CMakeFiles/crypto.dir/src/crypto/fipsmodule/fips_shared_support.c.o
 [ 51%] Building C object CMakeFiles/crypto.dir/src/crypto/fipsmodule/bcm.c.o
+[ 51%] Building C object CMakeFiles/crypto.dir/src/crypto/fipsmodule/fips_shared_support.c.o
 [ 51%] Building C object CMakeFiles/crypto.dir/src/crypto/hkdf/hkdf.c.o
 [ 52%] Building C object CMakeFiles/crypto.dir/src/crypto/hpke/hpke.c.o
 [ 52%] Building C object CMakeFiles/crypto.dir/src/crypto/hrss/hrss.c.o
@@ -222,8 +222,8 @@ running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build
 [ 56%] Building C object CMakeFiles/crypto.dir/src/crypto/pem/pem_x509.c.o
 [ 57%] Building C object CMakeFiles/crypto.dir/src/crypto/pem/pem_xaux.c.o
 [ 57%] Building C object CMakeFiles/crypto.dir/src/crypto/pkcs7/pkcs7.c.o
-[ 57%] Building C object CMakeFiles/crypto.dir/src/crypto/pkcs7/pkcs7_x509.c.o
 [ 58%] Building C object CMakeFiles/crypto.dir/src/crypto/pkcs8/p5_pbev2.c.o
+[ 58%] Building C object CMakeFiles/crypto.dir/src/crypto/pkcs7/pkcs7_x509.c.o
 [ 58%] Building C object CMakeFiles/crypto.dir/src/crypto/pkcs8/pkcs8.c.o
 [ 58%] Building C object CMakeFiles/crypto.dir/src/crypto/pkcs8/pkcs8_x509.c.o
 [ 59%] Building C object CMakeFiles/crypto.dir/src/crypto/poly1305/poly1305.c.o
@@ -271,7 +271,7 @@ running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build
 [ 75%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_def.c.o
 [ 76%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_ext.c.o
 [ 76%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_lu.c.o
-[ 76%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_obj.c.o
+[ 78%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_obj.c.o
 [ 78%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_req.c.o
 [ 78%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_set.c.o
 [ 78%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509_trs.c.o
@@ -283,8 +283,8 @@ running: cd "/home/camille/Documents/rust/faces-quic-client/target/release/build
 [ 80%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509name.c.o
 [ 81%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509rset.c.o
 [ 81%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x509spki.c.o
+[ 81%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x_algor.c.o
 [ 82%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x_all.c.o
-[ 82%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x_algor.c.o
 [ 82%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x_attrib.c.o
 [ 82%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x_crl.c.o
 [ 84%] Building C object CMakeFiles/crypto.dir/src/crypto/x509/x_exten.c.o

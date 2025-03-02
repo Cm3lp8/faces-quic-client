@@ -246,6 +246,9 @@ mod request_builder {
         pub fn data(&self) -> &[u8] {
             &self.data[..]
         }
+        pub fn len(&self) -> usize {
+            self.data.len()
+        }
         pub fn is_end(&self) -> bool {
             self.is_end
         }
