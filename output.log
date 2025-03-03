@@ -1,0 +1,65 @@
+   Compiling faces_quic_client v0.1.0 (/home/camille/Documents/rust/faces-quic-client)
+warning: unused import: `log::warn`
+ --> src/client_manager/client_request_manager.rs:9:9
+  |
+9 |     use log::warn;
+  |         ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `self`
+  --> src/client_manager.rs:18:32
+   |
+18 |     use crate::client_config::{self, ClientConfig};
+   |                                ^^^^
+
+warning: unused variable: `last_send`
+   --> src/client_init/quiche_http3_client.rs:426:13
+    |
+426 |     let mut last_send = Instant::now();
+    |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_last_send`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `pacing_interval`
+   --> src/client_init/quiche_http3_client.rs:427:9
+    |
+427 |     let pacing_interval = Duration::from_micros(14);
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pacing_interval`
+
+warning: unused variable: `pacing_instant`
+   --> src/client_init/quiche_http3_client.rs:429:13
+    |
+429 |         let pacing_instant = Instant::now();
+    |             ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pacing_instant`
+
+warning: variable does not need to be mutable
+   --> src/client_init/quiche_http3_client.rs:426:9
+    |
+426 |     let mut last_send = Instant::now();
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: unused variable: `last_send`
+   --> src/client_init/quiche_http3_client.rs:485:13
+    |
+485 |     let mut last_send = Instant::now();
+    |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_last_send`
+
+warning: unused variable: `pacing_interval`
+   --> src/client_init/quiche_http3_client.rs:486:9
+    |
+486 |     let pacing_interval = Duration::from_micros(140);
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pacing_interval`
+
+warning: variable does not need to be mutable
+   --> src/client_init/quiche_http3_client.rs:485:9
+    |
+485 |     let mut last_send = Instant::now();
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+

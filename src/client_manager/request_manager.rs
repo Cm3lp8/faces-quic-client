@@ -5,7 +5,7 @@ pub use request_format::{BodyType, H3Method};
 mod queue_builder {
     use std::time::{Duration, Instant};
 
-    use log::{debug, info};
+    use log::{debug, info, warn};
     use quiche::h3::Header;
 
     use self::request_builder::BodyRequest;
@@ -56,10 +56,21 @@ mod queue_builder {
 
                 let mut packet_count = 0;
                 let send_duration = Instant::now();
-                let mut sending_duration = Duration::from_micros(12);
+                let mut sending_duration = Duration::from_micros(52);
+                let mut last_send = Instant::now();
                 while byte_send < body.len() {
+                    debug!("send  [{:?}]", sending_duration);
+
+                    while last_send.elapsed() < sending_duration {
+                        std::thread::yield_now();
+                    }
+
                     std::thread::sleep(sending_duration);
                     let adjust_duration = crossbeam::channel::bounded::<Duration>(1);
+
+                    if let Ok(new_duration) = adjust_duration.1.try_recv() {
+                        sending_duration = new_duration;
+                    }
                     let end = if byte_send + chunk_size <= body.len() {
                         let end = chunk_size + byte_send;
                         debug!("bytes_send [{:?}] end[{:?}]", byte_send, end);
@@ -99,11 +110,9 @@ mod queue_builder {
                     };
 
                     packet_count += 1;
-                    if let Ok(new_duration) = adjust_duration.1.recv() {
-                        sending_duration = new_duration;
-                    }
+                    last_send = Instant::now();
                 }
-                debug!(
+                warn!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
                     byte_send, packet_count, send_duration.elapsed()
                 );
