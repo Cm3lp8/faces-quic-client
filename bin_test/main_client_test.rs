@@ -11,7 +11,8 @@ fn main() {
 
     let res = client
         .new_request(|req| {
-            req.post("/large_data", vec![22; 200_000_000], BodyType::Array)
+            req.post_file("/large_data", "/home/camille/curl2.sh")
+                .set_content_type(ContentType::TextPlain)
                 .set_user_agent("camille_0");
         })
         .unwrap()
@@ -19,31 +20,33 @@ fn main() {
 
     let res_2 = client
         .new_request(|req| {
-            req.post("/large_data", vec![2; 50_207_000], BodyType::Array)
+            req.post_file("/large_data", "/home/camille/v_info.txt")
+                .set_content_type(ContentType::TextPlain)
                 .set_user_agent("camille_1");
         })
         .unwrap()
         .with_progress_callback(|progress| info!("some progress2 [{:?}]", progress.progress()));
-    let res_3 = client
-        .new_request(|req| {
-            req.post("/large_data", vec![22; 50_000_000], BodyType::Array)
-                .set_user_agent("camille_2");
-        })
-        .unwrap()
-        .with_progress_callback(|progress| info!("some proress [{:?}]", progress.progress()));
+    /*
+        let res_3 = client
+            .new_request(|req| {
+                req.post("/large_data", vec![22; 50_000_000], BodyType::Array)
+                    .set_user_agent("camille_2");
+            })
+            .unwrap()
+            .with_progress_callback(|progress| info!("some proress [{:?}]", progress.progress()));
 
-    let res_4 = client
-        .new_request(|req| {
-            req.post("/large_data", vec![2; 50_000_000], BodyType::Array)
-                .set_user_agent("camille_3");
-        })
-        .unwrap()
-        .with_progress_callback(|progress| info!("some progress2 [{:?}]", progress.progress()));
-
+        let res_4 = client
+            .new_request(|req| {
+                req.post("/large_data", vec![2; 50_000_000], BodyType::Array)
+                    .set_user_agent("camille_3");
+            })
+            .unwrap()
+            .with_progress_callback(|progress| info!("some progress2 [{:?}]", progress.progress()));
+    */
     let mut res = res.wait_response().unwrap();
     let mut res_2 = res_2.wait_response().unwrap();
-    let mut res_3 = res_3.wait_response().unwrap();
-    let mut res_4 = res_4.wait_response().unwrap();
+    // let mut res_3 = res_3.wait_response().unwrap();
+    //let mut res_4 = res_4.wait_response().unwrap();
 
     let data = res.take_data();
     let data_len = data.len();
@@ -58,16 +61,18 @@ fn main() {
     println!("[{}]", res_2);
 
     println!("[{:?}] [{}]", &data[data_len - 5..], data_len);
-    let data = res_3.take_data();
-    let data_len = data.len();
+    /*
+        let data = res_3.take_data();
+        let data_len = data.len();
 
-    println!("[{}]", res_3);
+        println!("[{}]", res_3);
 
-    println!("[{:?}] [{}]", &data[data_len - 5..], data_len);
-    let data = res_4.take_data();
-    let data_len = data.len();
+        println!("[{:?}] [{}]", &data[data_len - 5..], data_len);
+        let data = res_4.take_data();
+        let data_len = data.len();
 
-    println!("[{}]", res_4);
+        println!("[{}]", res_4);
 
-    println!("[{:?}] [{}]", &data[data_len - 5..], data_len);
+        println!("[{:?}] [{}]", &data[data_len - 5..], data_len);
+    */
 }

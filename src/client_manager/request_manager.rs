@@ -1,6 +1,10 @@
 #![allow(warnings)]
+mod request_body;
 pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
-pub use request_builder::{Http3Request, Http3RequestBuilder, Http3RequestConfirm};
+pub use request_body::ContentType;
+pub use request_builder::{
+    Http3Request, Http3RequestBuilder, Http3RequestConfirm, Http3RequestPrep,
+};
 pub use request_format::{BodyType, H3Method};
 mod queue_builder {
     use std::time::{Duration, Instant};
@@ -8,7 +12,7 @@ mod queue_builder {
     use log::{debug, info, warn};
     use quiche::h3::Header;
 
-    use self::request_builder::BodyRequest;
+    use self::{request_body::RequestBody, request_builder::BodyRequest};
 
     use super::*;
 
@@ -38,10 +42,10 @@ mod queue_builder {
         ///the body with the stream_id.
         ///
         ///
-        pub fn send_body(&self, stream_id: u64, chunk_size: usize, body: Vec<u8>) {
+        pub fn send_body(&self, stream_id: u64, chunk_size: usize, mut body: RequestBody) {
             let body_sender = self.head.clone();
             std::thread::spawn(move || {
-                let body = body;
+                let mut body = body;
                 let mut byte_send = 0;
                 let mut packet_send = 0;
 
@@ -58,7 +62,9 @@ mod queue_builder {
                 let send_duration = Instant::now();
                 let mut sending_duration = Duration::from_micros(52);
                 let mut last_send = Instant::now();
-                while byte_send < body.len() {
+                let mut read_buffer = &mut vec![0; chunk_size].into_boxed_slice();
+
+                while let Ok(n) = body.read(&mut read_buffer) {
                     debug!("send  [{:?}]", sending_duration);
 
                     while last_send.elapsed() < sending_duration {
@@ -68,49 +74,30 @@ mod queue_builder {
                     std::thread::sleep(sending_duration);
                     let adjust_duration = crossbeam::channel::bounded::<Duration>(1);
 
-                    if let Ok(new_duration) = adjust_duration.1.try_recv() {
-                        sending_duration = new_duration;
+                    let end = chunk_size + byte_send;
+                    debug!("bytes_send [{:?}] end[{:?}]", byte_send, end);
+                    let data = read_buffer[..n].to_vec();
+
+                    let body_request = Http3Request::Body(BodyRequest::new(
+                        stream_id,
+                        packet_count as usize,
+                        data,
+                        if n == 0 { true } else { false },
+                    ));
+
+                    if let Err(e) = body_sender.send((body_request, adjust_duration.0)) {
+                        debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
+                        break;
                     }
-                    let end = if byte_send + chunk_size <= body.len() {
-                        let end = chunk_size + byte_send;
-                        debug!("bytes_send [{:?}] end[{:?}]", byte_send, end);
-                        let data = body[byte_send..end].to_vec();
-
-                        let body_request = Http3Request::Body(BodyRequest::new(
-                            stream_id,
-                            packet_count as usize,
-                            data,
-                            if end >= body.len() { true } else { false },
-                        ));
-
-                        if let Err(e) = body_sender.send((body_request, adjust_duration.0)) {
-                            debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
-                            break;
-                        }
-                        byte_send += chunk_size;
-                        end
-                    } else {
-                        let end = byte_send + (body.len() - byte_send);
-                        debug!("bytes_send [{:?}] end[{:?}]", byte_send, end);
-                        let data = body[byte_send..end].to_vec();
-
-                        let body_request = Http3Request::Body(BodyRequest::new(
-                            stream_id,
-                            packet_count as usize,
-                            data,
-                            if end >= body.len() { true } else { false },
-                        ));
-
-                        if let Err(e) = body_sender.send((body_request, adjust_duration.0)) {
-                            debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
-                            break;
-                        }
-                        byte_send += body.len() - byte_send;
-                        end
-                    };
-
+                    byte_send += n;
                     packet_count += 1;
                     last_send = Instant::now();
+                    if n == 0 {
+                        break;
+                    }
+                    if let Ok(new_duration) = adjust_duration.1.recv() {
+                        // sending_duration = new_duration;
+                    }
                 }
                 warn!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
@@ -170,12 +157,17 @@ mod queue_builder {
 }
 
 mod request_builder {
-    use std::{fmt::Debug, net::SocketAddr};
+    use std::{
+        fmt::Debug,
+        io::Read,
+        net::SocketAddr,
+        path::{Path, PathBuf},
+    };
 
     use log::debug;
     use quiche::h3::{self, Header};
 
-    use self::request_format::H3Method;
+    use self::{request_body::RequestBody, request_format::H3Method};
 
     use super::*;
 
@@ -193,6 +185,30 @@ mod request_builder {
         ///
         pub fn wait_stream_ids(&self) -> Result<(u64, String), crossbeam::channel::RecvError> {
             self.response.recv()
+        }
+    }
+    ///
+    ///Http3RequestPrep prepares the request to be processed by the request manager
+    ///
+    ///
+    ///
+    ///
+    pub enum Http3RequestPrep {
+        Body(Content),
+        Header(HeaderRequest),
+        BodyFromFile,
+    }
+    impl Http3RequestPrep {
+        pub fn new(peer_socket_address: Option<SocketAddr>) -> Http3RequestBuilder {
+            Http3RequestBuilder {
+                method: None,
+                path: None,
+                scheme: None,
+                content_type: None,
+                user_agent: None,
+                authority: peer_socket_address,
+                custom_headers: None,
+            }
         }
     }
 
@@ -214,12 +230,11 @@ mod request_builder {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Self::Body(body) => {
-                    let s_i = body.stream_id();
-                    let data_len = body.data.len();
+                    // let data_len = body.data.len();
                     write!(
                         f,
-                        "req: body =  stream_id [{s_i}] : Body packet [{}] bytes",
-                        data_len
+                        "req: body =  stream_id []",
+                        //   data_len
                     )
                 }
                 Self::Header(header) => {
@@ -229,18 +244,32 @@ mod request_builder {
             }
         }
     }
+
+    pub struct Content {
+        payload: RequestBody,
+    }
+    impl Content {
+        pub fn take(self) -> RequestBody {
+            self.payload
+        }
+        pub fn new(request_body: RequestBody) -> Self {
+            Self {
+                payload: request_body,
+            }
+        }
+    }
     pub struct BodyRequest {
         packet_id: usize,
         stream_id: u64,
-        data: Vec<u8>,
+        payload: Vec<u8>,
         is_end: bool,
     }
     impl BodyRequest {
-        pub fn new(stream_id: u64, packet_id: usize, data: Vec<u8>, is_end: bool) -> Self {
+        pub fn new(stream_id: u64, packet_id: usize, payload: Vec<u8>, is_end: bool) -> Self {
             BodyRequest {
                 packet_id,
                 stream_id,
-                data,
+                payload,
                 is_end,
             }
         }
@@ -250,15 +279,20 @@ mod request_builder {
         pub fn packet_id(&self) -> usize {
             self.packet_id
         }
+        pub fn get_reader<R: Read>(&mut self) -> Result<&mut R, ()> {
+            Err(())
+        }
+
         pub fn take_data(&mut self) -> Vec<u8> {
-            std::mem::replace(&mut self.data, Vec::with_capacity(1))
+            std::mem::replace(&mut self.payload, Vec::with_capacity(1))
         }
         pub fn data(&self) -> &[u8] {
-            &self.data[..]
+            &self.payload[..]
         }
         pub fn len(&self) -> usize {
-            self.data.len()
+            self.payload.len()
         }
+
         pub fn is_end(&self) -> bool {
             self.is_end
         }
@@ -297,6 +331,12 @@ mod request_builder {
                 .push(h3::Header::new(name.as_bytes(), value.as_bytes()));
             self
         }
+        pub fn add_header_option(mut self, header_option: Option<h3::Header>) -> Self {
+            if let Some(hdr) = header_option {
+                self.headers.push(hdr);
+            };
+            self
+        }
         pub fn send_ids(
             &self,
             stream_id: u64,
@@ -319,6 +359,7 @@ mod request_builder {
                 method: None,
                 path: None,
                 scheme: None,
+                content_type: None,
                 user_agent: None,
                 authority: peer_socket_address,
                 custom_headers: None,
@@ -331,19 +372,35 @@ mod request_builder {
         method: Option<H3Method>,
         path: Option<&'static str>,
         scheme: Option<&'static str>,
+        content_type: Option<String>,
         user_agent: Option<&'static str>,
         authority: Option<SocketAddr>,
         custom_headers: Option<Vec<(&'static str, &'static str)>>,
     }
 
     impl Http3RequestBuilder {
-        pub fn post(
+        pub fn post_data(&mut self, path: &'static str, data: Vec<u8>) -> &mut Self {
+            self.post(path, RequestBody::new_data(data))
+        }
+        pub fn post_file(
             &mut self,
-            path: &'static str,
-            data: Vec<u8>,
-            body_type: BodyType,
+            req_path: &'static str,
+            file_path: impl AsRef<Path>,
         ) -> &mut Self {
-            self.method = Some(H3Method::POST { data, body_type });
+            self.post(
+                req_path,
+                RequestBody::new_file_path(file_path.as_ref().to_path_buf()),
+            )
+        }
+        pub fn post_stream(
+            &mut self,
+            req_path: &'static str,
+            stream: Box<dyn Read + Send + 'static>,
+        ) -> &mut Self {
+            self.post(req_path, RequestBody::new_stream(stream))
+        }
+        fn post(&mut self, path: &'static str, payload: RequestBody) -> &mut Self {
+            self.method = Some(H3Method::POST { payload });
             self.path = Some(path);
             self
         }
@@ -364,7 +421,13 @@ mod request_builder {
             }
             self
         }
-        pub fn build(&mut self) -> Result<(Vec<Http3Request>, Option<Http3RequestConfirm>), ()> {
+        pub fn set_content_type(&mut self, content_type: ContentType) -> &mut Self {
+            self.content_type = Some(content_type.to_string());
+            self
+        }
+        pub fn build(
+            &mut self,
+        ) -> Result<(Vec<Http3RequestPrep>, Option<Http3RequestConfirm>), ()> {
             if self.method.is_none() || self.path.is_none() || self.authority.is_none() {
                 debug!("http3 request, nothing to build !");
                 return Err(());
@@ -373,8 +436,8 @@ mod request_builder {
             let (sender, receiver) = crossbeam::channel::bounded::<(u64, String)>(1);
             let confirmation = Some(Http3RequestConfirm { response: receiver });
 
-            let http_request = match self.method.take().unwrap() {
-                H3Method::GET => vec![Http3Request::Header(
+            let http_request_prep = match self.method.take().unwrap() {
+                H3Method::GET => vec![Http3RequestPrep::Header(
                     HeaderRequest::new(true, sender)
                         .add_header(":method", "GET")
                         .add_header(":scheme", "https")
@@ -389,40 +452,46 @@ mod request_builder {
                         )
                         .add_header("accept", "*/*"),
                 )],
-                H3Method::POST {
-                    mut data,
-                    body_type,
-                } => vec![
-                    Http3Request::Header(
-                        HeaderRequest::new(false, sender)
-                            .add_header(":method", "POST")
-                            .add_header(":scheme", "https")
-                            .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
-                            .add_header("content-length", data.len().to_string().as_str())
-                            .add_header(
-                                ":authority",
-                                self.authority.as_ref().unwrap().to_string().as_str(),
-                            )
-                            .add_header(
-                                "user-agent",
-                                self.user_agent.as_ref().unwrap().to_string().as_str(),
-                            )
-                            .add_header("accept", "*/*"),
-                    ),
-                    //99 is a place holder before receive a real stream id after submitting the
-                    //   header request
-                    Http3Request::Body(BodyRequest::new(
-                        99,
-                        1,
-                        std::mem::replace(&mut data, vec![]),
-                        true,
-                    )),
-                ],
+                H3Method::POST { mut payload } => {
+                    let mut content_type: Option<h3::Header> = None;
+                    if let RequestBody::File(_) = &payload {
+                        if let Some(content_type_set) = &self.content_type {
+                            content_type = Some(h3::Header::new(
+                                b"content-type",
+                                content_type_set.as_bytes(),
+                            ));
+                        }
+                    };
+                    vec![
+                        Http3RequestPrep::Header(
+                            HeaderRequest::new(false, sender)
+                                .add_header(":method", "POST")
+                                .add_header(":scheme", "https")
+                                .add_header(
+                                    ":path",
+                                    self.path.as_ref().unwrap().to_string().as_str(),
+                                )
+                                .add_header("content-length", payload.len().to_string().as_str())
+                                .add_header(
+                                    ":authority",
+                                    self.authority.as_ref().unwrap().to_string().as_str(),
+                                )
+                                .add_header_option(content_type)
+                                .add_header(
+                                    "user-agent",
+                                    self.user_agent.as_ref().unwrap().to_string().as_str(),
+                                )
+                                .add_header("accept", "*/*"),
+                        ),
+                        //   header request
+                        Http3RequestPrep::Body(Content::new(payload)),
+                    ]
+                }
                 _ => vec![],
             };
 
-            if !http_request.is_empty() {
-                Ok((http_request, confirmation))
+            if !http_request_prep.is_empty() {
+                Ok((http_request_prep, confirmation))
             } else {
                 Err(())
             }
@@ -432,12 +501,14 @@ mod request_builder {
 
 mod request_format {
 
+    use self::request_body::RequestBody;
+
     use super::*;
     use quiche::h3;
     #[derive(PartialEq)]
     pub enum H3Method {
         GET,
-        POST { data: Vec<u8>, body_type: BodyType },
+        POST { payload: RequestBody },
         PUT,
         DELETE,
     }
@@ -451,8 +522,7 @@ mod request_format {
             match &String::from_utf8_lossy(input)[..] {
                 "GET" => Ok(H3Method::GET),
                 "POST" => Ok(H3Method::POST {
-                    data: vec![],
-                    body_type: BodyType::Ping,
+                    payload: RequestBody::Empty,
                 }),
                 "PUT" => Ok(H3Method::PUT),
                 "DELETE" => Ok(H3Method::DELETE),
@@ -631,7 +701,7 @@ mod test {
         let data_len = data.len();
         let body_type = BodyType::Ping;
         let request = new_request
-            .post("/post", data, body_type)
+            .post_data("/post", data)
             .set_user_agent("Camille")
             .build();
 
@@ -648,7 +718,7 @@ mod test {
         let header_r = &request.0[0];
         let body_r = &request.0[1];
         match header_r {
-            Http3Request::Header(header) => {
+            Http3RequestPrep::Header(header) => {
                 assert!(true);
                 let hdrs = header.headers();
 
@@ -700,10 +770,10 @@ mod test {
                     assert!(false)
                 }
             }
-            Http3Request::Body(_) => {
+            Http3RequestPrep::Body(_) => {
                 assert!(false)
             }
-            Http3Request::BodyFromFile => {}
+            Http3RequestPrep::BodyFromFile => {}
         }
     }
     #[test]
@@ -723,9 +793,9 @@ mod test {
         // Get method build only 1 request header
         assert!(request.0.len() == 1);
 
-        let http_request: &Http3Request = &request.0[0];
+        let http_request: &Http3RequestPrep = &request.0[0];
         match http_request {
-            Http3Request::Header(header) => {
+            Http3RequestPrep::Header(header) => {
                 assert!(true);
                 let hdrs = header.headers();
 
@@ -778,10 +848,10 @@ mod test {
                     assert!(false)
                 }
             }
-            Http3Request::Body(_) => {
+            Http3RequestPrep::Body(_) => {
                 assert!(false)
             }
-            Http3Request::BodyFromFile => {}
+            Http3RequestPrep::BodyFromFile => {}
         }
     }
 }

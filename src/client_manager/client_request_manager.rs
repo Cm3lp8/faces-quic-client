@@ -13,7 +13,7 @@ mod client_request_mngr {
         client_config::ConnexionInfos,
         client_init::Http3Client,
         client_manager::{
-            request_manager::{Http3Request, Http3RequestBuilder, RequestHead},
+            request_manager::{Http3Request, Http3RequestBuilder, Http3RequestPrep, RequestHead},
             response_manager::{PartialResponse, ResponseManager, WaitPeerResponse},
             BodyHead, ResponseQueue,
         },
@@ -85,7 +85,7 @@ mod client_request_mngr {
             request_builder: impl FnOnce(&mut Http3RequestBuilder),
         ) -> Result<WaitPeerResponse, ()> {
             let mut http3_request_builder =
-                Http3Request::new(self.connexion_infos.get_peer_socket_address());
+                Http3RequestPrep::new(self.connexion_infos.get_peer_socket_address());
             request_builder(&mut http3_request_builder);
 
             match http3_request_builder.build() {
@@ -106,7 +106,7 @@ mod client_request_mngr {
 
                     for req in &http3_request {
                         match req {
-                            Http3Request::Header(header_req) => {
+                            Http3RequestPrep::Header(header_req) => {
                                 let adjust_sending_duration =
                                     crossbeam::channel::bounded::<Duration>(1);
                                 if let Err(e) = self.request_head.send_request((
@@ -127,9 +127,9 @@ mod client_request_mngr {
 
                     for req in http3_request {
                         match req {
-                            Http3Request::Body(mut body_req) => {
+                            Http3RequestPrep::Body(body_req) => {
                                 self.request_head
-                                    .send_body(stream_id, 1350, body_req.take_data());
+                                    .send_body(stream_id, 1350, body_req.take());
                             }
                             _ => {}
                         }

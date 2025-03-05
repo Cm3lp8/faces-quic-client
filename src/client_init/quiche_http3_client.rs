@@ -257,6 +257,10 @@ pub fn run(
                                                     warn!("[{:?}]", i)
                                                 }
                                             }
+                                            if let Ok(_) = adjust_send_timer.send(last_sending_time)
+                                            {
+                                                //warn!("Failed sending adjust_send_timer [{:?}]", e);
+                                            }
                                         }
                                         Err(quiche::h3::Error::StreamBlocked) => {
                                             error!("StreamBlocked !!")
@@ -275,11 +279,6 @@ pub fn run(
                         }
 
                         Http3Request::BodyFromFile => {}
-                    }
-                    if last_sending_time > Duration::from_micros(10) {
-                        if let Ok(_) = adjust_send_timer.try_send(last_sending_time) {
-                            //warn!("Failed sending adjust_send_timer [{:?}]", e);
-                        }
                     }
                 }
             }
