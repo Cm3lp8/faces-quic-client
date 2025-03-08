@@ -26,6 +26,7 @@ fn main() {
         })
         .unwrap()
         .with_progress_callback(|progress| info!("some progress2 [{:?}]", progress.progress()));
+
     /*
         let res_3 = client
             .new_request(|req| {
@@ -53,14 +54,14 @@ fn main() {
 
     println!("[{}]", res);
 
-    println!("[{:?}] [{}]", &data[data_len - 5..], data_len);
+    println!("[{}]", data_len);
 
     let data = res_2.take_data();
     let data_len = data.len();
 
     println!("[{}]", res_2);
 
-    println!("[{:?}] [{}]", &data[data_len - 5..], data_len);
+    println!(" [{}]", data_len);
     /*
         let data = res_3.take_data();
         let data_len = data.len();

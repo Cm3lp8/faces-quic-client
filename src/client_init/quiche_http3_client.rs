@@ -303,6 +303,7 @@ pub fn run(
                     }
                     Ok((stream_id, quiche::h3::Event::Data)) => {
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
+                            warn!("new data ! [{:?}]", read);
                             if let Err(e) =
                                 response_queue.send_response(Http3Response::new_body_data(
                                     stream_id,
@@ -317,6 +318,7 @@ pub fn run(
                         }
                     }
                     Ok((stream_id, quiche::h3::Event::Finished)) => {
+                        warn!("Finished !");
                         debug!("response received in {:?}, closing...", req_start.elapsed());
                         if let Err(e) = response_queue.send_response(Http3Response::new_body_data(
                             stream_id,
@@ -324,7 +326,7 @@ pub fn run(
                             &[],
                             true,
                         )) {
-                            debug!("Error failed  [{}]   [{:?}]", stream_id, e);
+                            info!("Error failed  [{}]   [{:?}]", stream_id, e);
                         };
                         //     conn.close(true, 0x00, b"kthxbye").unwrap();
                     }

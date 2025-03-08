@@ -158,7 +158,7 @@ mod response_builder {
         usize,
     };
 
-    use log::{debug, error};
+    use log::{debug, error, info, warn};
     use quiche::h3::{self, Header, NameValue};
 
     pub struct ProgressStatus {
@@ -557,6 +557,7 @@ mod response_builder {
             let mut can_delete_in_table = false;
             match server_packet {
                 Http3Response::Header(headers) => {
+                    warn!("Http3 reponse [{:?}]", headers.is_end());
                     if let Some(_status_100) = headers
                         .headers()
                         .iter()
@@ -621,11 +622,20 @@ mod response_builder {
                     }
                 }
                 Http3Response::Body(body) => {
+                    warn!(
+                        "Http3 reponse [{:?}] header [{:?}]",
+                        body.is_end(),
+                        self.headers.is_some()
+                    );
                     if let Some(_headers) = &self.headers {
                         if body.packet.len() > 0 {
                             self.packet_count += 1;
                             self.data.extend_from_slice(body.packet());
-                            debug!("body data extended [{:?}]", body.packet.len());
+                            info!(
+                                "body data extended [{:?}] [{:?}]",
+                                body.packet.len(),
+                                body.is_end()
+                            );
                         }
 
                         if body.is_end() {
@@ -679,7 +689,7 @@ mod response_manager_worker {
         sync::{Arc, Mutex},
     };
 
-    use log::debug;
+    use log::{debug, info};
 
     use self::{response_builder::PartialResponse, response_mngr::PartialResponseReceiver};
 
@@ -698,12 +708,12 @@ mod response_manager_worker {
         let partial_table_clone_1 = partial_response_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
-                debug!("New packet response : [{:?}]", server_response);
+                info!("New packet response : [{:?}]", server_response);
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
-                    debug!("extending data...");
+                    info!("extending data...");
                     delete_entry = entry.extend_data(server_response);
                 }
 
