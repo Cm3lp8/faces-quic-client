@@ -60,17 +60,17 @@ pub fn run(
     config
         .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
         .unwrap();
-    config.set_max_idle_timeout(5000);
+    config.set_max_idle_timeout(20000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(20_000_000);
-    config.set_initial_max_stream_data_bidi_local(20_000_000);
-    config.set_initial_max_stream_data_bidi_remote(20_000_000);
+    config.set_initial_max_data(1_300_000_000);
+    config.set_initial_max_stream_data_bidi_local(1_300_000_000);
+    config.set_initial_max_stream_data_bidi_remote(1_300_000_000);
     config.set_initial_max_stream_data_uni(10_000_000);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
-    // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::BBR2);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::BBR2);
     let mut http3_conn = None;
     // Generate a random source connection ID for the connection.
     let mut scid = [0; quiche::MAX_CONN_ID_LEN];
@@ -121,6 +121,8 @@ pub fn run(
     let mut lost = 0;
     let mut h3_byte_written = 0;
     let mut h3_bytes_given = 0;
+    let mut round = 0;
+    let mut bytes_re = 0;
 
     'main: loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
@@ -174,7 +176,7 @@ pub fn run(
                     if let Err(_) = waker_1.wake() {
                         error!("failed wakin mio ");
                     }
-                    continue 'main;
+                    // continue 'main;
                 }
             }
 
@@ -203,79 +205,81 @@ pub fn run(
                         Http3Request::Body(mut body_req) => {
                             debug!("sending body succes [{:?}]", body_req.data().len());
 
-                            if let Ok(can_write) =
-                                conn.stream_writable(body_req.stream_id(), body_req.len())
+                            if body_req.len() > conn.stream_capacity(body_req.stream_id()).unwrap()
                             {
-                                h3_bytes_given += body_req.len();
-                                if !can_write {
-                                    pending_bodies
-                                        .entry(body_req.stream_id())
-                                        .or_default()
-                                        .push((body_req.take_data(), body_req.is_end()));
-                                    pending_count += 1;
-                                    continue 'main;
-                                } else {
-                                    match h3_conn.send_body(
-                                        &mut conn,
-                                        body_req.stream_id(),
-                                        body_req.data(),
-                                        body_req.is_end(),
-                                    ) {
-                                        Ok(v) => {
-                                            bodies_send += 1;
-                                            h3_byte_written += v;
-                                            if v < body_req.len() {
-                                                lost += body_req.len() - v;
-                                                debug!("lost total [{}]", lost);
-                                                pending_bodies
-                                                    .entry(body_req.stream_id())
-                                                    .or_default()
-                                                    .push((
-                                                        body_req.data()[v..].to_vec(),
-                                                        body_req.is_end(),
-                                                    ));
-                                                pending_count += 1;
-                                                continue 'main;
-                                            }
+                                pending_bodies
+                                    .entry(body_req.stream_id())
+                                    .or_default()
+                                    .push((body_req.take_data(), body_req.is_end()));
+                                pending_count += 1;
+                            //      continue 'main;
+                            } else {
+                                match h3_conn.send_body(
+                                    &mut conn,
+                                    body_req.stream_id(),
+                                    body_req.data(),
+                                    body_req.is_end(),
+                                ) {
+                                    Ok(v) => {
+                                        bodies_send += 1;
+                                        h3_byte_written += v;
+                                        if v < body_req.len() {
+                                            lost += body_req.len() - v;
+                                            debug!("lost total [{}]", lost);
+                                            pending_bodies
+                                                .entry(body_req.stream_id())
+                                                .or_default()
+                                                .push((
+                                                    body_req.data()[v..].to_vec(),
+                                                    body_req.is_end(),
+                                                ));
+                                            pending_count += 1;
+                                            continue 'main;
+                                        }
 
-                                            if body_req.is_end() {
-                                                warn!(
-                                                    "time spend [{:?}] [{} Mb/s]  [{}] from conn",
-                                                    req_start.elapsed().as_secs_f32(),
-                                                    measure_output_bandwitdth(
-                                                        bytes_send, req_start
-                                                    ),
-                                                    bytes_out_from_conn
-                                                );
-                                                warn!("conn stats, {:?}", conn.stats());
-                                                warn!(
+                                        if body_req.is_end() {
+                                            warn!(
+                                                "time spend [{:?}] [{} Mb/s]  [{}] from conn",
+                                                req_start.elapsed().as_secs_f32(),
+                                                measure_output_bandwitdth(bytes_send, req_start),
+                                                bytes_out_from_conn
+                                            );
+                                            warn!("conn stats, {:?}", conn.stats());
+                                            warn!(
                                                 "Success ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]",
                                                 h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
                                             );
 
-                                                for i in pending_bodies.iter() {
-                                                    warn!("[{:?}]", i)
-                                                }
-                                            }
-                                            if let Ok(_) = adjust_send_timer.send(last_sending_time)
-                                            {
-                                                //warn!("Failed sending adjust_send_timer [{:?}]", e);
+                                            for i in pending_bodies.iter() {
+                                                warn!("[{:?}]", i)
                                             }
                                         }
-                                        Err(quiche::h3::Error::StreamBlocked) => {
-                                            error!("StreamBlocked !!")
+                                        if let Ok(_) = adjust_send_timer.send(last_sending_time) {
+                                            //warn!("Failed sending adjust_send_timer [{:?}]", e);
                                         }
-                                        Err(e) => {
-                                            error!(
+                                    }
+                                    Err(quiche::h3::Error::StreamBlocked) => {
+                                        error!("StreamBlocked !!")
+                                    }
+                                    Err(e) => {
+                                        error!(
                                     "Error : Failed to send body request [{}], packet [{}] {:?}",
                                     body_req.stream_id(),
                                     body_req.packet_id(),
                                     e
                                 );
-                                        }
                                     }
                                 }
                             }
+                            /*
+                            if let Ok(can_write) =
+                                conn.stream_writable(body_req.stream_id(), body_req.len())
+                            {
+                                h3_bytes_given += body_req.len();
+                                if !can_write {
+                                } else {
+                                }
+                            }*/
                         }
 
                         Http3Request::BodyFromFile => {}
@@ -289,6 +293,7 @@ pub fn run(
             loop {
                 match http3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
+                        warn!("stream_id [{}]new HEADERS [{:#?}]", stream_id, list);
                         if let Err(e) = response_queue.send_response(Http3Response::new_header(
                             stream_id,
                             trace_id.clone(),
@@ -303,7 +308,7 @@ pub fn run(
                     }
                     Ok((stream_id, quiche::h3::Event::Data)) => {
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
-                            warn!("new data ! [{:?}]", read);
+                            bytes_re += read;
                             if let Err(e) =
                                 response_queue.send_response(Http3Response::new_body_data(
                                     stream_id,
@@ -331,7 +336,7 @@ pub fn run(
                         //     conn.close(true, 0x00, b"kthxbye").unwrap();
                     }
                     Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
-                        debug!("request was reset by peer with {}, closing...", e);
+                        warn!("request was reset by peer with {}, closing...", e);
                         conn.close(true, 0x00, b"kthxbye").unwrap();
                     }
                     Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
@@ -477,7 +482,7 @@ fn handle_outgoing_packets_purge(
 ) -> bool {
     let mut done = false;
     let mut last_send = Instant::now();
-    let pacing_interval = Duration::from_micros(14);
+    let pacing_interval = Duration::from_micros(144);
     while !done {
         let pacing_instant = Instant::now();
         let (write, send_info) = match conn.send(out) {
@@ -515,17 +520,15 @@ fn handle_outgoing_packets_purge(
 
         *packet_send += 1;
 
-        /*
-                while last_send.elapsed()
-                    < (if *last_sending_time > pacing_interval {
-                        *last_sending_time
-                    } else {
-                        pacing_interval
-                    })
-                {
-                    std::thread::yield_now();
-                }
-        */
+        while last_send.elapsed()
+            < (if *last_sending_time > pacing_interval {
+                *last_sending_time
+            } else {
+                pacing_interval
+            })
+        {
+            std::thread::yield_now();
+        }
     }
     done
 }
@@ -592,7 +595,7 @@ fn handle_outgoing_packets(
 
         while last_send.elapsed()
             < (if *last_sending_time > pacing_interval {
-                *last_sending_time
+                pacing_interval
             } else {
                 pacing_interval
             })
@@ -623,84 +626,86 @@ fn handle_writable(
     h3_bytes_written: &mut usize,
 ) -> bool {
     let mut will_break_main_loop = false;
-    'purge: loop {
-        let mut new_position_index: Option<usize> = None;
-        if let Some(mut bodies_coll) = pending_map.remove(&stream_id) {
-            handle_incoming_packets_purge(conn, socket, in_buf, local_addr);
-            let len = bodies_coll.len();
-            let mut can_write = true;
-            for (i, (body, is_end)) in bodies_coll.iter_mut().enumerate() {
-                if body.is_empty() {
-                    continue;
-                }
+    //'purge: loop {
+    let mut new_position_index: Option<usize> = None;
+    if let Some(mut bodies_coll) = pending_map.remove(&stream_id) {
+        //   handle_incoming_packets_purge(conn, socket, in_buf, local_addr);
+        let len = bodies_coll.len();
+        let mut can_write = true;
+        for (i, (body, is_end)) in bodies_coll.iter_mut().enumerate() {
+            if body.is_empty() {
+                continue;
+            }
 
-                if let Ok(write) = conn.stream_writable(stream_id, body.len()) {
-                    can_write = write;
-                }
+            if let Ok(write) = conn.stream_writable(stream_id, body.len()) {
+                can_write = write;
+            }
 
-                if can_write {
-                    will_break_main_loop = true;
-                    match h3_conn.send_body(conn, stream_id, &body, *is_end) {
-                        Ok(v) => {
-                            *h3_bytes_written += v;
-                            if *is_end {
-                                debug!("conn stats, {:?}", conn.stats());
-                            }
-                            debug!(
-                                " sending data =[{}/{}] (len_send/total_len)  in store [{}]",
-                                v,
-                                body.len(),
-                                len
-                            );
-                            if v == body.len() {
-                                *body = vec![];
-                            }
-                            if v < body.len() {
-                                new_position_index = Some(i);
-                                body.drain(..v);
-                            }
+            if can_write {
+                will_break_main_loop = true;
+                match h3_conn.send_body(conn, stream_id, &body, *is_end) {
+                    Ok(v) => {
+                        *h3_bytes_written += v;
+                        if *is_end {
+                            debug!("conn stats, {:?}", conn.stats());
                         }
-                        Err(h3::Error::StreamBlocked) => {
-                            debug!("stream blocked");
-                            new_position_index = Some(i);
-                            break;
+                        debug!(
+                            " sending data =[{}/{}] (len_send/total_len)  in store [{}]",
+                            v,
+                            body.len(),
+                            len
+                        );
+                        if v == body.len() {
+                            *body = vec![];
                         }
-                        Err(e) => {
-                            error!(
-                                "[{:?}] index {i} coll [{}] packetlen [{}]",
-                                e,
-                                body.len(),
-                                bodies_coll.len()
-                            );
-
+                        if v < body.len() {
                             new_position_index = Some(i);
-                            break;
+                            body.drain(..v);
                         }
                     }
-                } else {
-                    debug!("wait for write capaticit");
-                    new_position_index = Some(i);
-                    break;
-                }
-            }
+                    Err(h3::Error::StreamBlocked) => {
+                        debug!("stream blocked");
+                        new_position_index = Some(i);
+                        break;
+                    }
+                    Err(e) => {
+                        error!(
+                            "[{:?}] index {i} coll [{}] packetlen [{}]",
+                            e,
+                            body.len(),
+                            bodies_coll.len()
+                        );
 
-            //insert one more time the pending bodies collection in the table, minus ones that have
-            //been succesfully send.
-            if let Some(new_start_index) = new_position_index {
-                pending_map.insert(stream_id, bodies_coll[new_start_index..].to_vec());
+                        new_position_index = Some(i);
+                        break;
+                    }
+                }
+            } else {
+                debug!("wait for write capaticit");
+                new_position_index = Some(i);
+                break;
             }
         }
-        if handle_outgoing_packets_purge(
-            conn,
-            socket,
-            out,
-            last_sending_time,
-            packet_send,
-            bytes_out_from_conn,
-        ) {
-            break 'purge;
+
+        //insert one more time the pending bodies collection in the table, minus ones that have
+        //been succesfully send.
+        if let Some(new_start_index) = new_position_index {
+            pending_map.insert(stream_id, bodies_coll[new_start_index..].to_vec());
         }
     }
+    /*
+    if handle_outgoing_packets_purge(
+        conn,
+        socket,
+        out,
+        last_sending_time,
+        packet_send,
+        bytes_out_from_conn,
+    ) {
+        break 'purge;
+    }
+    */
+    // }
     will_break_main_loop
 }
 fn measure_output_bandwitdth(bytes_written: u64, time_since_start: Instant) -> f64 {

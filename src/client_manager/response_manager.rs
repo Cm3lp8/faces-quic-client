@@ -557,7 +557,6 @@ mod response_builder {
             let mut can_delete_in_table = false;
             match server_packet {
                 Http3Response::Header(headers) => {
-                    warn!("Http3 reponse [{:?}]", headers.is_end());
                     if let Some(_status_100) = headers
                         .headers()
                         .iter()
@@ -622,20 +621,19 @@ mod response_builder {
                     }
                 }
                 Http3Response::Body(body) => {
-                    warn!(
-                        "Http3 reponse [{:?}] header [{:?}]",
-                        body.is_end(),
-                        self.headers.is_some()
-                    );
-                    if let Some(_headers) = &self.headers {
+                    if let Some(headers) = &self.headers {
+                        let status = String::from_utf8_lossy(
+                            headers
+                                .iter()
+                                .find(|hdr| hdr.name() == b"status")
+                                .unwrap()
+                                .value(),
+                        )
+                        .parse::<usize>()
+                        .unwrap();
                         if body.packet.len() > 0 {
                             self.packet_count += 1;
                             self.data.extend_from_slice(body.packet());
-                            info!(
-                                "body data extended [{:?}] [{:?}]",
-                                body.packet.len(),
-                                body.is_end()
-                            );
                         }
 
                         if body.is_end() {
@@ -651,21 +649,25 @@ mod response_builder {
                                     error!("Failed sending percentage completion [{:?}]", e);
                                 }
                             }
-                            if let Err(e) = self.response_channel.0.send(CompletedResponse::new(
-                                self.stream_id,
-                                std::mem::replace(
-                                    self.headers.as_mut().unwrap(),
-                                    Vec::with_capacity(1),
-                                ),
-                                std::mem::replace(&mut self.data, vec![]),
-                            )) {
-                                debug!(
+                            if status == 200 {
+                                if let Err(e) =
+                                    self.response_channel.0.send(CompletedResponse::new(
+                                        self.stream_id,
+                                        std::mem::replace(
+                                            self.headers.as_mut().unwrap(),
+                                            Vec::with_capacity(1),
+                                        ),
+                                        std::mem::replace(&mut self.data, vec![]),
+                                    ))
+                                {
+                                    debug!(
                         "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
                         body.stream_id(),
                         e
                     );
-                            } else {
-                                can_delete_in_table = true;
+                                } else {
+                                    can_delete_in_table = true;
+                                }
                             }
                         }
                     } else {
@@ -708,12 +710,10 @@ mod response_manager_worker {
         let partial_table_clone_1 = partial_response_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
-                info!("New packet response : [{:?}]", server_response);
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
-                    info!("extending data...");
                     delete_entry = entry.extend_data(server_response);
                 }
 
