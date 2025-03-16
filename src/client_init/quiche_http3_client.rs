@@ -545,7 +545,7 @@ fn handle_outgoing_packets(
     let mut packet_thres = 0;
     let mut written = 0;
     let mut last_send = Instant::now();
-    let pacing_interval = Duration::from_micros(40);
+    let pacing_interval = Duration::from_micros(120);
     loop {
         let (write, send_info) = match conn.send(out) {
             Ok(v) => {
