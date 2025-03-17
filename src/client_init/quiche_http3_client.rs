@@ -126,6 +126,7 @@ pub fn run(
 
     'main: loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
+        round += 1;
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
         handle_incoming_packets(&events, &mut conn, &socket, &mut buf, local_addr);
@@ -193,6 +194,7 @@ pub fn run(
                                 header_req.is_end(),
                             ) {
                                 req_start = std::time::Instant::now();
+                                let _ = waker_1.wake();
                                 debug!("sended succes [{:?}]", header_req);
                                 if let Err(e) = header_req.send_ids(stream_id, trace_id.as_str()) {
                                     debug!(
@@ -235,6 +237,9 @@ pub fn run(
                                                 ));
                                             pending_count += 1;
                                             continue 'main;
+                                        }
+                                        if !body_req.is_end() {
+                                            let _ = waker_1.wake();
                                         }
 
                                         if body_req.is_end() {
@@ -287,6 +292,12 @@ pub fn run(
                 }
             }
         }
+        for b in pending_bodies.iter() {
+            if !b.1.is_empty() {
+                let _ = waker_1.wake();
+                break;
+            }
+        }
         if let Some(http3_conn) = &mut http3_conn {
             // Process HTTP/3 events.
             let trace_id = conn.trace_id().to_string();
@@ -294,6 +305,7 @@ pub fn run(
                 match http3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
                         warn!("stream_id [{}]new HEADERS [{:#?}]", stream_id, list);
+                        let _ = waker_1.wake();
                         if let Err(e) = response_queue.send_response(Http3Response::new_header(
                             stream_id,
                             trace_id.clone(),
@@ -309,6 +321,10 @@ pub fn run(
                     Ok((stream_id, quiche::h3::Event::Data)) => {
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
                             bytes_re += read;
+                            if bytes_re % 3 == 0 {
+                                info!("receiv data [{bytes_re}] [{stream_id}]");
+                            }
+                            let _ = waker_1.wake();
                             if let Err(e) =
                                 response_queue.send_response(Http3Response::new_body_data(
                                     stream_id,
@@ -323,7 +339,7 @@ pub fn run(
                         }
                     }
                     Ok((stream_id, quiche::h3::Event::Finished)) => {
-                        warn!("Finished !");
+                        warn!("Finished stream [{stream_id}]!");
                         debug!("response received in {:?}, closing...", req_start.elapsed());
                         if let Err(e) = response_queue.send_response(Http3Response::new_body_data(
                             stream_id,
@@ -333,6 +349,7 @@ pub fn run(
                         )) {
                             info!("Error failed  [{}]   [{:?}]", stream_id, e);
                         };
+                        let _ = waker_1.wake();
                         //     conn.close(true, 0x00, b"kthxbye").unwrap();
                     }
                     Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
@@ -369,12 +386,6 @@ pub fn run(
         if conn.is_closed() {
             warn!("connection closed, {:?}", conn.stats());
             break Ok(conn.trace_id().to_owned());
-        }
-        if bytes_send % 10000 == 0 {
-            info!(
-                "Mb/s = [{}]",
-                measure_output_bandwitdth(bytes_send, req_start)
-            );
         }
     }
 }
@@ -466,7 +477,7 @@ fn handle_incoming_packets(
         let _read = match conn.recv(&mut buf[..len], recv_info) {
             Ok(v) => v,
             Err(e) => {
-                debug!("recv failed: {:?}", e);
+                error!("recv failed: {:?}", e);
                 continue 'read;
             }
         };
@@ -545,7 +556,7 @@ fn handle_outgoing_packets(
     let mut packet_thres = 0;
     let mut written = 0;
     let mut last_send = Instant::now();
-    let pacing_interval = Duration::from_micros(120);
+    let pacing_interval = Duration::from_micros(160);
     loop {
         let (write, send_info) = match conn.send(out) {
             Ok(v) => {
@@ -586,10 +597,8 @@ fn handle_outgoing_packets(
 
         packet_thres += 1;
         *packet_send += 1;
-        if packet_thres >= 1000 {
-            if let Err(e) = waker_1.wake() {
-                error!("wake error [{:?}]", e);
-            }
+
+        if packet_thres >= 10 {
             break;
         }
 
@@ -602,9 +611,6 @@ fn handle_outgoing_packets(
         {
             std::thread::yield_now();
         }
-    }
-    if let Err(e) = waker_1.wake() {
-        error!("wake error [{:?}]", e);
     }
     Ok(written)
 }

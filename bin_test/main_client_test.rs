@@ -23,7 +23,7 @@ fn main() {
 
     let res_2 = client
         .new_request(|req| {
-            req.post_data("/large_data", vec![1; 50_000_000])
+            req.post_data("/large_data", vec![1; 50_800_910])
                 .set_user_agent("camille_1");
         })
         .unwrap()

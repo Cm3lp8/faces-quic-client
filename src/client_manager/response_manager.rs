@@ -239,11 +239,19 @@ mod response_builder {
                 Self::Body(body) => {
                     let s_i = body.stream_id();
                     let data_len = body.packet.len();
-                    write!(f, "stream_id [{s_i}] : Body packet [{}] bytes", data_len)
+                    write!(
+                        f,
+                        "body stream_id [{s_i}] : Body packet [{}] bytes",
+                        data_len
+                    )
                 }
                 Self::Header(header) => {
                     let s_i = header.stream_id();
-                    write!(f, "stream_id [{s_i}] : header [{:#?}]", header.headers())
+                    write!(
+                        f,
+                        "header stream_id [{s_i}] : header [{:#?}]",
+                        header.headers()
+                    )
                 }
             }
         }
@@ -544,6 +552,9 @@ mod response_builder {
         pub fn stream_id(&self) -> u64 {
             self.stream_id
         }
+        pub fn data_len(&self) -> usize {
+            self.data.len()
+        }
         pub fn connexion_id(&self) -> &str {
             self.connexion_id.as_str()
         }
@@ -577,7 +588,7 @@ mod response_builder {
                         "Error: Failed sending progress status for stream_id [{}] -> [{:?}]",
                         headers.stream_id(),
                         e
-                    );
+                         );
                                 }
                             } else {
                                 error!("Failed parsing hdr value : not a digit");
@@ -637,6 +648,11 @@ mod response_builder {
                         }
 
                         if body.is_end() {
+                            warn!(
+                                "body size [{:?}] for |[{}]",
+                                self.data.len(),
+                                self.stream_id
+                            );
                             if let Some(total_len) = self.content_length {
                                 let percentage_completed =
                                     ((self.data.len() as f32 / total_len as f32) * 100.0) as usize;
@@ -671,6 +687,9 @@ mod response_builder {
                             }
                         }
                     } else {
+                        if body.is_end() {
+                            warn!("no header .")
+                        }
                         if let BodyType::ProgressStatusBody(progress_status) = body.body_type() {
                             if let Err(e) = self.progress_channel.0.send(progress_status) {
                                 error!("Failed sending percentage completion [{:?}]", e);
@@ -710,10 +729,24 @@ mod response_manager_worker {
         let partial_table_clone_1 = partial_response_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
+                if server_response.is_end() {
+                    info!(
+                        "fin stream [{}] len [{:?}]",
+                        server_response.stream_id(),
+                        server_response.len()
+                    );
+                }
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
+                    if server_response.is_end() {
+                        info!(
+                            "entry stre[{stream_id}] [{:?}] \n[{:#?}]",
+                            server_response,
+                            entry.data_len()
+                        );
+                    }
                     delete_entry = entry.extend_data(server_response);
                 }
 
