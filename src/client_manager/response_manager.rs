@@ -612,6 +612,11 @@ mod response_builder {
                         };
                     };
 
+                    warn!(
+                        "HEADER [{:?}] is end [{}]",
+                        headers.headers,
+                        headers.is_end()
+                    );
                     if headers.is_end() {
                         if let Err(e) = self.response_channel.0.send(CompletedResponse::new(
                             self.stream_id,

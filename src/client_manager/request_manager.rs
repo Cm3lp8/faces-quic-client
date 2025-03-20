@@ -60,19 +60,17 @@ mod queue_builder {
 
                 let mut packet_count = 0;
                 let send_duration = Instant::now();
-                let mut sending_duration = Duration::from_micros(252);
+                let mut sending_duration = Duration::from_micros(130);
                 let mut last_send = Instant::now();
                 let mut read_buffer = &mut vec![0; chunk_size].into_boxed_slice();
 
                 while let Ok(n) = body.read(&mut read_buffer) {
                     debug!("send  [{:?}]", sending_duration);
 
-                    /*
-                                        while last_send.elapsed() < sending_duration {
-                                            std::thread::yield_now();
-                                        }
-                    */
-                    std::thread::sleep(sending_duration);
+                    while last_send.elapsed() < sending_duration {
+                        std::thread::yield_now();
+                    }
+                    // std::thread::sleep(sending_duration);
                     let adjust_duration = crossbeam::channel::bounded::<Duration>(1);
 
                     let end = chunk_size + byte_send;

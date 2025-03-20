@@ -43,8 +43,10 @@ pub fn run(
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
     let mut socket = mio::net::UdpSocket::bind(bind_addr).unwrap();
+    let mut last_instant: Option<Instant> = None;
 
     let mut waker = Some(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
+
     let waker_1 = Waker::new(poll.registry(), WAKER_TOKEN_1).unwrap();
     poll.registry()
         .register(
@@ -207,7 +209,8 @@ pub fn run(
                         Http3Request::Body(mut body_req) => {
                             debug!("sending body succes [{:?}]", body_req.data().len());
 
-                            if body_req.len() > conn.stream_capacity(body_req.stream_id()).unwrap()
+                            if body_req.len()
+                                > conn.stream_capacity(body_req.stream_id()).unwrap_or(0)
                             {
                                 pending_bodies
                                     .entry(body_req.stream_id())
@@ -304,7 +307,10 @@ pub fn run(
             loop {
                 match http3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
-                        warn!("stream_id [{}]new HEADERS [{:#?}]", stream_id, list);
+                        warn!(
+                            "stream_id [{}]new HEADERS [{:#?}] more_frames[{more_frames}]",
+                            stream_id, list
+                        );
                         let _ = waker_1.wake();
                         if let Err(e) = response_queue.send_response(Http3Response::new_header(
                             stream_id,
@@ -321,9 +327,6 @@ pub fn run(
                     Ok((stream_id, quiche::h3::Event::Data)) => {
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
                             bytes_re += read;
-                            if bytes_re % 3 == 0 {
-                                info!("receiv data [{bytes_re}] [{stream_id}]");
-                            }
                             let _ = waker_1.wake();
                             if let Err(e) =
                                 response_queue.send_response(Http3Response::new_body_data(
@@ -382,6 +385,7 @@ pub fn run(
             &mut bytes_send,
             &mut bytes_out_from_conn,
             &mut packet_send,
+            &mut last_instant,
         );
         if conn.is_closed() {
             warn!("connection closed, {:?}", conn.stats());
@@ -448,7 +452,12 @@ fn handle_incoming_packets(
     buf: &mut [u8],
     local_addr: SocketAddr,
 ) {
+    let mut read_loop_count = 0;
     'read: loop {
+        read_loop_count += 1;
+        if read_loop_count > 50 {
+            break 'read;
+        }
         // If the event loop reported no events, it means that the timeout
         // has expired, so handle it without attempting to read packets. We
         // will then proceed with the send loop.
@@ -552,12 +561,14 @@ fn handle_outgoing_packets(
     byte_len_since_start: &mut u64,
     bytes_out_from_conn: &mut usize,
     packet_send: &mut i32,
+    last_instant: &mut Option<Instant>,
 ) -> Result<usize, ()> {
     let mut packet_thres = 0;
     let mut written = 0;
-    let mut last_send = Instant::now();
-    let pacing_interval = Duration::from_micros(160);
+    let mut pacing_interval = Duration::from_micros(60);
+    let mut last_instant: Option<Instant> = None;
     loop {
+        let start = Instant::now();
         let (write, send_info) = match conn.send(out) {
             Ok(v) => {
                 written += v.0;
@@ -573,6 +584,10 @@ fn handle_outgoing_packets(
                 break;
             }
         };
+
+        while start.elapsed() < pacing_interval {
+            std::thread::yield_now();
+        }
         match socket.send_to(&out[..write], send_info.to) {
             Ok(v) => {
                 *byte_len_since_start += v as u64;
@@ -586,6 +601,8 @@ fn handle_outgoing_packets(
             }
         }
 
+        let current_time = send_info.at;
+
         *last_sending_time = send_info.at.elapsed();
 
         if *packet_send % 20 == 0 {
@@ -598,18 +615,9 @@ fn handle_outgoing_packets(
         packet_thres += 1;
         *packet_send += 1;
 
-        if packet_thres >= 10 {
+        last_instant = Some(current_time);
+        if packet_thres >= 50 {
             break;
-        }
-
-        while last_send.elapsed()
-            < (if *last_sending_time > pacing_interval {
-                pacing_interval
-            } else {
-                pacing_interval
-            })
-        {
-            std::thread::yield_now();
         }
     }
     Ok(written)
