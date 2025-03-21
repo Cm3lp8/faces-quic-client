@@ -60,7 +60,7 @@ mod queue_builder {
 
                 let mut packet_count = 0;
                 let send_duration = Instant::now();
-                let mut sending_duration = Duration::from_micros(130);
+                let mut sending_duration = Duration::from_micros(13);
                 let mut last_send = Instant::now();
                 let mut read_buffer = &mut vec![0; chunk_size].into_boxed_slice();
 

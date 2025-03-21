@@ -1,6 +1,6 @@
 use log::{debug, error, info, warn};
 //#[macro_use]
-use mio::{Events, Token, Waker};
+use mio::{event::Event, Events, Poll, Token, Waker};
 use quiche::h3::{self};
 use ring::rand::*;
 use std::{
@@ -131,8 +131,42 @@ pub fn run(
         round += 1;
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
-        handle_incoming_packets(&events, &mut conn, &socket, &mut buf, local_addr);
+        //        handle_incoming_packets(&events, &mut conn, &socket, &mut buf, local_addr);
 
+        'read: loop {
+            // If the event loop reported no events, it means that the timeout
+            // has expired, so handle it without attempting to read packets. We
+            // will then proceed with the send loop.
+            if events.is_empty() {
+                //             debug!("timed out");
+                conn.on_timeout();
+                break 'read;
+            }
+            let (len, from) = match socket.recv_from(&mut buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    // There are no more UDP packets to read, so end the read
+                    // loop.
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        debug!("recv() would block");
+                        break 'read;
+                    }
+                    panic!("recv() failed: {:?}", e);
+                }
+            };
+            let recv_info = quiche::RecvInfo {
+                to: local_addr,
+                from,
+            };
+            // Process potentially coalesced packets.
+            let _read = match conn.recv(&mut buf[..len], recv_info) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("recv failed: {:?}", e);
+                    continue 'read;
+                }
+            };
+        }
         if conn.is_closed() {
             break Ok(conn.trace_id().to_owned());
         }
@@ -377,6 +411,8 @@ pub fn run(
         // quiche reports that there are no more packets to be sent.
         //
         let _w = handle_outgoing_packets(
+            &mut poll,
+            &mut events,
             &mut conn,
             &socket,
             &mut out,
@@ -551,6 +587,8 @@ fn handle_outgoing_packets_purge(
     done
 }
 fn handle_outgoing_packets(
+    poll: &mut Poll,
+    events: &mut Events,
     conn: &mut quiche::Connection,
     socket: &mio::net::UdpSocket,
     out: &mut [u8],
@@ -565,8 +603,19 @@ fn handle_outgoing_packets(
     let mut written = 0;
     let mut pacing_interval = Duration::from_micros(60);
     let mut last_instant: Option<Instant> = None;
+    let mut remaining_time: Option<Duration> = None;
     loop {
-        let start = Instant::now();
+        if let Some(timer) = &mut remaining_time {
+            if let Some(last_instant) = last_instant {
+                let now = Instant::now();
+                if now <= last_instant {
+                    *timer = last_instant.duration_since(now);
+                    let _ = poll.poll(events, remaining_time);
+                    continue;
+                }
+                remaining_time = None;
+            }
+        }
         let (write, send_info) = match conn.send(out) {
             Ok(v) => {
                 written += v.0;
@@ -583,10 +632,12 @@ fn handle_outgoing_packets(
             }
         };
 
-        /*
-        while start.elapsed() < pacing_interval {
-            std::thread::yield_now();
-        }*/
+        last_instant = Some(send_info.at);
+        let now = Instant::now();
+        if now < send_info.at {
+            remaining_time = Some(send_info.at.duration_since(now));
+        }
+
         match socket.send_to(&out[..write], send_info.to) {
             Ok(v) => {
                 *byte_len_since_start += v as u64;
