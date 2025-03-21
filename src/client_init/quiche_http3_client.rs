@@ -65,9 +65,9 @@ pub fn run(
     config.set_max_idle_timeout(20000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(1_300_000_000);
-    config.set_initial_max_stream_data_bidi_local(1_300_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_300_000_000);
+    config.set_initial_max_data(30_000_000);
+    config.set_initial_max_stream_data_bidi_local(30_000_000);
+    config.set_initial_max_stream_data_bidi_remote(30_000_000);
     config.set_initial_max_stream_data_uni(10_000_000);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
@@ -590,9 +590,10 @@ fn handle_outgoing_packets(
             }
         };
 
+        /*
         while start.elapsed() < pacing_interval {
             std::thread::yield_now();
-        }
+        }*/
         match socket.send_to(&out[..write], send_info.to) {
             Ok(v) => {
                 *byte_len_since_start += v as u64;
