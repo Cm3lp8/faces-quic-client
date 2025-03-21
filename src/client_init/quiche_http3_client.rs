@@ -610,7 +610,8 @@ fn handle_outgoing_packets(
                 let now = Instant::now();
                 if now <= last_instant {
                     *timer = last_instant.duration_since(now);
-                    let _ = poll.poll(events, remaining_time);
+                    //                    let _ = poll.poll(events, remaining_time);
+                    std::thread::yield_now();
                     continue;
                 }
                 remaining_time = None;
