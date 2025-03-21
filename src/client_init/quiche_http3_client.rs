@@ -65,10 +65,10 @@ pub fn run(
     config.set_max_idle_timeout(20000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(30_000_000);
-    config.set_initial_max_stream_data_bidi_local(30_000_000);
-    config.set_initial_max_stream_data_bidi_remote(30_000_000);
-    config.set_initial_max_stream_data_uni(10_000_000);
+    config.set_initial_max_data(100_000_000);
+    config.set_initial_max_stream_data_bidi_local(100_000_000);
+    config.set_initial_max_stream_data_bidi_remote(100_000_000);
+    config.set_initial_max_stream_data_uni(100_000_000);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
@@ -157,6 +157,78 @@ pub fn run(
             }
         }
         //handle writable
+        if let Some(http3_conn) = &mut http3_conn {
+            // Process HTTP/3 events.
+            let trace_id = conn.trace_id().to_string();
+            loop {
+                match http3_conn.poll(&mut conn) {
+                    Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
+                        warn!(
+                            "stream_id [{}]new HEADERS [{:#?}] more_frames[{more_frames}]",
+                            stream_id, list
+                        );
+                        let _ = waker_1.wake();
+                        if let Err(e) = response_queue.send_response(Http3Response::new_header(
+                            stream_id,
+                            trace_id.clone(),
+                            list,
+                            !more_frames,
+                        )) {
+                            debug!(
+                                "Error failed to send response back [{}]   [{:?}]",
+                                stream_id, e
+                            );
+                        };
+                    }
+                    Ok((stream_id, quiche::h3::Event::Data)) => {
+                        while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
+                            bytes_re += read;
+                            let _ = waker_1.wake();
+                            if let Err(e) =
+                                response_queue.send_response(Http3Response::new_body_data(
+                                    stream_id,
+                                    trace_id.clone(),
+                                    &buf[..read],
+                                    false,
+                                ))
+                            {
+                                debug!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
+                            };
+                            //   print!("{}", unsafe { std::str::from_utf8_unchecked(&buf[..read]) });
+                        }
+                    }
+                    Ok((stream_id, quiche::h3::Event::Finished)) => {
+                        warn!("Finished stream [{stream_id}]!");
+                        debug!("response received in {:?}, closing...", req_start.elapsed());
+                        if let Err(e) = response_queue.send_response(Http3Response::new_body_data(
+                            stream_id,
+                            trace_id.clone(),
+                            &[],
+                            true,
+                        )) {
+                            info!("Error failed  [{}]   [{:?}]", stream_id, e);
+                        };
+                        let _ = waker_1.wake();
+                        //     conn.close(true, 0x00, b"kthxbye").unwrap();
+                    }
+                    Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
+                        warn!("request was reset by peer with {}, closing...", e);
+                        conn.close(true, 0x00, b"kthxbye").unwrap();
+                    }
+                    Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
+                    Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                        debug!("GOAWAY id={}", goaway_id);
+                    }
+                    Err(quiche::h3::Error::Done) => {
+                        break;
+                    }
+                    Err(e) => {
+                        debug!("HTTP/3 processing failed: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        }
 
         if let Some(h3_conn) = &mut http3_conn {
             for stream_id in conn.writable() {
@@ -301,78 +373,6 @@ pub fn run(
                 break;
             }
         }
-        if let Some(http3_conn) = &mut http3_conn {
-            // Process HTTP/3 events.
-            let trace_id = conn.trace_id().to_string();
-            loop {
-                match http3_conn.poll(&mut conn) {
-                    Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
-                        warn!(
-                            "stream_id [{}]new HEADERS [{:#?}] more_frames[{more_frames}]",
-                            stream_id, list
-                        );
-                        let _ = waker_1.wake();
-                        if let Err(e) = response_queue.send_response(Http3Response::new_header(
-                            stream_id,
-                            trace_id.clone(),
-                            list,
-                            !more_frames,
-                        )) {
-                            debug!(
-                                "Error failed to send response back [{}]   [{:?}]",
-                                stream_id, e
-                            );
-                        };
-                    }
-                    Ok((stream_id, quiche::h3::Event::Data)) => {
-                        while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
-                            bytes_re += read;
-                            let _ = waker_1.wake();
-                            if let Err(e) =
-                                response_queue.send_response(Http3Response::new_body_data(
-                                    stream_id,
-                                    trace_id.clone(),
-                                    &buf[..read],
-                                    false,
-                                ))
-                            {
-                                debug!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
-                            };
-                            //   print!("{}", unsafe { std::str::from_utf8_unchecked(&buf[..read]) });
-                        }
-                    }
-                    Ok((stream_id, quiche::h3::Event::Finished)) => {
-                        warn!("Finished stream [{stream_id}]!");
-                        debug!("response received in {:?}, closing...", req_start.elapsed());
-                        if let Err(e) = response_queue.send_response(Http3Response::new_body_data(
-                            stream_id,
-                            trace_id.clone(),
-                            &[],
-                            true,
-                        )) {
-                            info!("Error failed  [{}]   [{:?}]", stream_id, e);
-                        };
-                        let _ = waker_1.wake();
-                        //     conn.close(true, 0x00, b"kthxbye").unwrap();
-                    }
-                    Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
-                        warn!("request was reset by peer with {}, closing...", e);
-                        conn.close(true, 0x00, b"kthxbye").unwrap();
-                    }
-                    Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
-                    Ok((goaway_id, quiche::h3::Event::GoAway)) => {
-                        debug!("GOAWAY id={}", goaway_id);
-                    }
-                    Err(quiche::h3::Error::Done) => {
-                        break;
-                    }
-                    Err(e) => {
-                        debug!("HTTP/3 processing failed: {:?}", e);
-                        break;
-                    }
-                }
-            }
-        }
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
         //
@@ -455,13 +455,6 @@ fn handle_incoming_packets(
     let mut read_loop_count = 0;
     let mut octets_read = 0;
     'read: loop {
-        if octets_read > 20000 {
-            break 'read;
-        }
-        read_loop_count += 1;
-        if read_loop_count > 50 {
-            break 'read;
-        }
         // If the event loop reported no events, it means that the timeout
         // has expired, so handle it without attempting to read packets. We
         // will then proceed with the send loop.
@@ -622,9 +615,6 @@ fn handle_outgoing_packets(
         *packet_send += 1;
 
         last_instant = Some(current_time);
-        if packet_thres >= 50 {
-            break;
-        }
     }
     Ok(written)
 }
