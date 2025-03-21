@@ -453,7 +453,11 @@ fn handle_incoming_packets(
     local_addr: SocketAddr,
 ) {
     let mut read_loop_count = 0;
+    let mut octets_read = 0;
     'read: loop {
+        if octets_read > 20000 {
+            break 'read;
+        }
         read_loop_count += 1;
         if read_loop_count > 50 {
             break 'read;
@@ -478,6 +482,7 @@ fn handle_incoming_packets(
                 panic!("recv() failed: {:?}", e);
             }
         };
+        octets_read += len;
         let recv_info = quiche::RecvInfo {
             to: local_addr,
             from,

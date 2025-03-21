@@ -86,6 +86,7 @@ fn main() {
     // let mut res_3 = res_3.wait_response().unwrap();
     //let mut res_4 = res_4.wait_response().unwrap();
 
+        println!("0 data len [{}]stream_0", data_len);
     let path = "/home/camille/Vidéos/vid_test_reception_2.mp4";
 
     /*
@@ -110,7 +111,7 @@ fn main() {
         buf_writer.flush();
         println!(" [{}]", res_2);
     */
-    println!("data len [{}]stream_0", data_len);
+    println!("1data len [{}]stream_0", data_len);
 
     /*
         let data = res_3.take_data();
