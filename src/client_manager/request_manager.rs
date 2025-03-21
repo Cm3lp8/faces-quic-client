@@ -67,9 +67,6 @@ mod queue_builder {
                 while let Ok(n) = body.read(&mut read_buffer) {
                     debug!("send  [{:?}]", sending_duration);
 
-                    while last_send.elapsed() < sending_duration {
-                        std::thread::yield_now();
-                    }
                     // std::thread::sleep(sending_duration);
                     let adjust_duration = crossbeam::channel::bounded::<Duration>(1);
 

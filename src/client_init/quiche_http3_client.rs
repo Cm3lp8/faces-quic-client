@@ -602,20 +602,13 @@ fn handle_outgoing_packets(
     let mut packet_thres = 0;
     let mut written = 0;
     let mut pacing_interval = Duration::from_micros(60);
-    let mut last_instant: Option<Instant> = None;
     let mut remaining_time: Option<Duration> = None;
     loop {
-        if let Some(timer) = &mut remaining_time {
-            if let Some(last_instant) = last_instant {
-                let now = Instant::now();
-                if now <= last_instant {
-                    *timer = last_instant.duration_since(now);
-                    //                    let _ = poll.poll(events, remaining_time);
-                    std::thread::yield_now();
-                    continue;
-                }
-                remaining_time = None;
+        if let Some(last_instant) = last_instant {
+            if Instant::now() <= *last_instant {
+                continue;
             }
+            remaining_time = None;
         }
         let (write, send_info) = match conn.send(out) {
             Ok(v) => {
@@ -633,11 +626,7 @@ fn handle_outgoing_packets(
             }
         };
 
-        last_instant = Some(send_info.at);
-        let now = Instant::now();
-        if now < send_info.at {
-            remaining_time = Some(send_info.at.duration_since(now));
-        }
+        *last_instant = Some(send_info.at);
 
         match socket.send_to(&out[..write], send_info.to) {
             Ok(v) => {
@@ -652,21 +641,10 @@ fn handle_outgoing_packets(
             }
         }
 
-        let current_time = send_info.at;
-
         *last_sending_time = send_info.at.elapsed();
-
-        if *packet_send % 20 == 0 {
-            debug!(
-                "Packets uploading... [{write}] time [{:?}]",
-                send_info.at.elapsed()
-            )
-        }
 
         packet_thres += 1;
         *packet_send += 1;
-
-        last_instant = Some(current_time);
     }
     Ok(written)
 }

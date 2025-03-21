@@ -128,8 +128,7 @@ mod client_request_mngr {
                     for req in http3_request {
                         match req {
                             Http3RequestPrep::Body(body_req) => {
-                                self.request_head
-                                    .send_body(stream_id, 4096 * 2, body_req.take());
+                                self.request_head.send_body(stream_id, 512, body_req.take());
                             }
                             _ => {}
                         }
