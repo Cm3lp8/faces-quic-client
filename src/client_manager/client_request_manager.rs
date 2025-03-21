@@ -129,7 +129,7 @@ mod client_request_mngr {
                         match req {
                             Http3RequestPrep::Body(body_req) => {
                                 self.request_head
-                                    .send_body(stream_id, 1350, body_req.take());
+                                    .send_body(stream_id, 4096, body_req.take());
                             }
                             _ => {}
                         }
