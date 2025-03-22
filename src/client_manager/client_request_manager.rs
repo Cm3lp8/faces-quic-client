@@ -3,7 +3,7 @@ pub use client_request_mngr::ClientRequestManager;
 mod client_request_mngr {
     use std::{
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use log::warn;
@@ -102,13 +102,14 @@ mod client_request_mngr {
                             *self.waker.lock().unwrap() = Some(waker);
                             println!("Connected !  waker received ");
                         }
+                        println!("Connected !");
                     }
 
                     for req in &http3_request {
                         match req {
                             Http3RequestPrep::Header(header_req) => {
                                 let adjust_sending_duration =
-                                    crossbeam::channel::bounded::<Duration>(1);
+                                    crossbeam::channel::bounded::<Instant>(1);
                                 if let Err(e) = self.request_head.send_request((
                                     Http3Request::Header(header_req.clone()),
                                     adjust_sending_duration.0,

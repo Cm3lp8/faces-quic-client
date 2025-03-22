@@ -28,7 +28,10 @@ pub fn run(
     let mut out = [0; MAX_DATAGRAM_SIZE];
     let mut last_sending_time = Duration::ZERO;
     // Cache the pending bodies if conn isn't writable
-    let mut pending_bodies: HashMap<u64, Vec<(Vec<u8>, bool)>> = HashMap::new();
+    let mut pending_bodies: HashMap<
+        u64,
+        Vec<(Vec<u8>, crossbeam::channel::Sender<Instant>, bool)>,
+    > = HashMap::new();
     //    let url = url::Url::parse(&args.next().unwrap()).unwrap();
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -313,15 +316,17 @@ pub fn run(
                             }
                         }
                         Http3Request::Body(mut body_req) => {
-                            debug!("sending body succes [{:?}]", body_req.data().len());
-
                             if body_req.len()
                                 > conn.stream_capacity(body_req.stream_id()).unwrap_or(0)
                             {
                                 pending_bodies
                                     .entry(body_req.stream_id())
                                     .or_default()
-                                    .push((body_req.take_data(), body_req.is_end()));
+                                    .push((
+                                        body_req.take_data(),
+                                        adjust_send_timer,
+                                        body_req.is_end(),
+                                    ));
                                 pending_count += 1;
                             //      continue 'main;
                             } else {
@@ -342,25 +347,20 @@ pub fn run(
                                                 .or_default()
                                                 .push((
                                                     body_req.data()[v..].to_vec(),
+                                                    adjust_send_timer,
                                                     body_req.is_end(),
                                                 ));
                                             pending_count += 1;
                                             continue 'main;
                                         }
+                                        if let Ok(_) = adjust_send_timer.send(Instant::now()) {};
                                         if !body_req.is_end() {
                                             let _ = waker_1.wake();
                                         }
 
                                         if body_req.is_end() {
                                             warn!(
-                                                "time spend [{:?}] [{} Mb/s]  [{}] from conn",
-                                                req_start.elapsed().as_secs_f32(),
-                                                measure_output_bandwitdth(bytes_send, req_start),
-                                                bytes_out_from_conn
-                                            );
-                                            warn!("conn stats, {:?}", conn.stats());
-                                            warn!(
-                                                "Success ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]",
+                                                " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_req.stream_id(),
                                                 h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
                                             );
 
@@ -368,9 +368,7 @@ pub fn run(
                                                 warn!("[{:?}]", i)
                                             }
                                         }
-                                        if let Ok(_) = adjust_send_timer.send(last_sending_time) {
-                                            //warn!("Failed sending adjust_send_timer [{:?}]", e);
-                                        }
+                                        if let Ok(e) = adjust_send_timer.send(Instant::now()) {}
                                     }
                                     Err(quiche::h3::Error::StreamBlocked) => {
                                         error!("StreamBlocked !!")
@@ -656,7 +654,7 @@ fn handle_writable(
     h3_conn: &mut h3::Connection,
     stream_id: u64,
     conn: &mut quiche::Connection,
-    pending_map: &mut HashMap<u64, Vec<(Vec<u8>, bool)>>,
+    pending_map: &mut HashMap<u64, Vec<(Vec<u8>, crossbeam::channel::Sender<Instant>, bool)>>,
     socket: &mio::net::UdpSocket,
     out: &mut [u8],
     last_sending_time: &mut Duration,
@@ -672,7 +670,7 @@ fn handle_writable(
         //   handle_incoming_packets_purge(conn, socket, in_buf, local_addr);
         let len = bodies_coll.len();
         let mut can_write = true;
-        for (i, (body, is_end)) in bodies_coll.iter_mut().enumerate() {
+        for (i, (body, send_confirmation_to_reader, is_end)) in bodies_coll.iter_mut().enumerate() {
             if body.is_empty() {
                 continue;
             }
@@ -696,6 +694,7 @@ fn handle_writable(
                             len
                         );
                         if v == body.len() {
+                            let _ = send_confirmation_to_reader.send(Instant::now());
                             *body = vec![];
                         }
                         if v < body.len() {

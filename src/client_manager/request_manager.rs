@@ -19,21 +19,21 @@ mod queue_builder {
     #[derive(Clone)]
     pub struct RequestChannel {
         channel: (
-            crossbeam::channel::Sender<(Http3Request, crossbeam::channel::Sender<Duration>)>,
-            crossbeam::channel::Receiver<(Http3Request, crossbeam::channel::Sender<Duration>)>,
+            crossbeam::channel::Sender<(Http3Request, crossbeam::channel::Sender<Instant>)>,
+            crossbeam::channel::Receiver<(Http3Request, crossbeam::channel::Sender<Instant>)>,
         ),
     }
 
     pub struct RequestHead {
-        head: crossbeam::channel::Sender<(Http3Request, crossbeam::channel::Sender<Duration>)>,
+        head: crossbeam::channel::Sender<(Http3Request, crossbeam::channel::Sender<Instant>)>,
     }
     impl RequestHead {
         pub fn send_request(
             &self,
-            request: (Http3Request, crossbeam::channel::Sender<Duration>),
+            request: (Http3Request, crossbeam::channel::Sender<Instant>),
         ) -> Result<
             (),
-            crossbeam::channel::SendError<(Http3Request, crossbeam::channel::Sender<Duration>)>,
+            crossbeam::channel::SendError<(Http3Request, crossbeam::channel::Sender<Instant>)>,
         > {
             self.head.send(request)
         }
@@ -46,6 +46,7 @@ mod queue_builder {
             let body_sender = self.head.clone();
             std::thread::spawn(move || {
                 let mut body = body;
+                let body_total_len = body.len();
                 let mut byte_send = 0;
                 let mut packet_send = 0;
 
@@ -65,35 +66,33 @@ mod queue_builder {
                 let mut read_buffer = &mut vec![0; chunk_size].into_boxed_slice();
 
                 while let Ok(n) = body.read(&mut read_buffer) {
-                    debug!("send  [{:?}]", sending_duration);
+                    let now = Instant::now();
 
                     // std::thread::sleep(sending_duration);
-                    let adjust_duration = crossbeam::channel::bounded::<Duration>(1);
+                    let adjust_duration = crossbeam::channel::bounded::<Instant>(1);
 
-                    let end = chunk_size + byte_send;
-                    debug!("bytes_send [{:?}] end[{:?}]", byte_send, end);
+                    let end = n + byte_send;
                     let data = read_buffer[..n].to_vec();
 
                     let body_request = Http3Request::Body(BodyRequest::new(
                         stream_id,
                         packet_count as usize,
                         data,
-                        if n == 0 { true } else { false },
+                        if end == body_total_len { true } else { false },
                     ));
 
                     if let Err(e) = body_sender.send((body_request, adjust_duration.0)) {
                         debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
                         break;
                     }
+                    let _ = adjust_duration.1.recv();
                     byte_send += n;
                     packet_count += 1;
                     last_send = Instant::now();
-                    if n == 0 {
+                    if byte_send == body_total_len {
                         break;
                     }
-                    if let Ok(new_duration) = adjust_duration.1.recv() {
-                        // sending_duration = new_duration;
-                    }
+                    if let Ok(new_instant) = adjust_duration.1.recv() {}
                 }
                 warn!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
@@ -104,11 +103,11 @@ mod queue_builder {
     }
 
     pub struct RequestQueue {
-        queue: crossbeam::channel::Receiver<(Http3Request, crossbeam::channel::Sender<Duration>)>,
+        queue: crossbeam::channel::Receiver<(Http3Request, crossbeam::channel::Sender<Instant>)>,
     }
 
     impl RequestQueue {
-        pub fn pop_request(&self) -> Option<(Http3Request, crossbeam::channel::Sender<Duration>)> {
+        pub fn pop_request(&self) -> Option<(Http3Request, crossbeam::channel::Sender<Instant>)> {
             if let Ok(new_req) = self.queue.try_recv() {
                 debug!("sending next request [{:?}]", new_req);
                 Some(new_req)
