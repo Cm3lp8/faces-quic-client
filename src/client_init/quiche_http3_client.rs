@@ -229,7 +229,7 @@ pub fn run(
                                     false,
                                 ))
                             {
-                                debug!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
+                                info!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
                             };
                             //   print!("{}", unsafe { std::str::from_utf8_unchecked(&buf[..read]) });
                         }

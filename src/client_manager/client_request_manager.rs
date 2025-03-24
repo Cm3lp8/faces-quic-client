@@ -88,8 +88,9 @@ mod client_request_mngr {
                 Http3RequestPrep::new(self.connexion_infos.get_peer_socket_address());
             request_builder(&mut http3_request_builder);
 
+            let path = http3_request_builder.get_path();
             match http3_request_builder.build() {
-                Ok((http3_request, http3_confirm)) => {
+                Ok((http3_request, event_subscriber, http3_confirm)) => {
                     /*
                      *
                      * if connexion is closed, open it :
@@ -129,7 +130,8 @@ mod client_request_mngr {
                     for req in http3_request {
                         match req {
                             Http3RequestPrep::Body(body_req) => {
-                                self.request_head.send_body(stream_id, 512, body_req.take());
+                                self.request_head
+                                    .send_body(stream_id, 1024, body_req.take());
                             }
                             _ => {}
                         }
@@ -147,7 +149,11 @@ mod client_request_mngr {
                          * */
                         if let Ok(stream_ids) = stream_ids {
                             let (partial_response, completed_channel, progress_channel) =
-                                PartialResponse::new(&stream_ids);
+                                PartialResponse::new(
+                                    path.unwrap().as_str(),
+                                    event_subscriber,
+                                    &stream_ids,
+                                );
 
                             let peer_response = WaitPeerResponse::new(
                                 &stream_ids,

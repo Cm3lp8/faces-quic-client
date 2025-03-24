@@ -1,6 +1,8 @@
 pub use queue_builder::{ResponseChannel, ResponseHead, ResponseQueue};
 pub use response_builder::PartialResponse;
-pub use response_builder::{Http3Response, WaitPeerResponse};
+pub use response_builder::{
+    DownloadProgressStatus, Http3Response, UploadProgressStatus, WaitPeerResponse,
+};
 pub use response_mngr::ResponseManager;
 
 mod response_mngr {
@@ -155,42 +157,147 @@ mod queue_builder {
 mod response_builder {
     use std::{
         fmt::{Debug, Display},
+        sync::Arc,
         usize,
     };
 
     use log::{debug, error, info, warn};
     use quiche::h3::{self, Header, NameValue};
+    use uuid::Uuid;
 
-    pub struct ProgressStatus {
-        completed: usize,
+    use crate::RequestEventListener;
+
+    pub struct DownloadProgressStatus {
+        req_path: String,
+        request_uuid: Uuid,
+        progress: f32,
+        total: usize,
+        received: usize,
     }
-    impl ProgressStatus {
-        pub fn new(percentage_completed: usize) -> Self {
-            let value = if percentage_completed > 100 {
-                100
+    impl Display for DownloadProgressStatus {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "percentage_completed [{}] || written/total [{}/{}]",
+                self.progress, self.received, self.total
+            )
+        }
+    }
+    impl DownloadProgressStatus {
+        pub fn new(
+            req_path: &str,
+            request_uuid: Uuid,
+            received: usize,
+            total: usize,
+            percentage_completed: f32,
+        ) -> Self {
+            let value = if percentage_completed > 1.0 {
+                1.0
             } else {
                 percentage_completed
             };
 
-            Self { completed: value }
+            Self {
+                req_path: req_path.to_string(),
+                request_uuid,
+                progress: value,
+                total,
+                received,
+            }
         }
-        pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-            let mut progress: Option<usize> = None;
+        pub fn uuid(&self) -> Uuid {
+            self.request_uuid
+        }
+        pub fn req_path(&self) -> String {
+            self.req_path.to_owned()
+        }
+        pub fn progress(&self) -> f32 {
+            self.progress as f32
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct UploadProgressStatus {
+        request_uuid: Uuid,
+        req_path: String,
+        completed: f32,
+        total: usize,
+        received: usize,
+    }
+    impl Display for UploadProgressStatus {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "percentage_completed [{}] || written/total [{}/{}]",
+                self.completed, self.received, self.completed
+            )
+        }
+    }
+    impl UploadProgressStatus {
+        pub fn new(
+            req_path: &str,
+            request_uuid: Uuid,
+            received: usize,
+            total: usize,
+            percentage_completed: f32,
+        ) -> Self {
+            let value = if percentage_completed > 1.0 {
+                1.0
+            } else {
+                percentage_completed
+            };
+
+            Self {
+                req_path: req_path.to_string(),
+                request_uuid,
+                completed: value,
+                total,
+                received,
+            }
+        }
+        pub fn uuid(&self) -> Uuid {
+            self.request_uuid
+        }
+        pub fn req_path(&self) -> String {
+            self.req_path.to_owned()
+        }
+        pub fn from_bytes(req_path: &str, request_uuid: Uuid, bytes: &[u8]) -> Option<Self> {
+            let mut progress: Option<f32> = None;
+            let mut written = 0usize;
+            let mut total = 0usize;
             for key in String::from_utf8_lossy(bytes).split("%&") {
-                if let Some((_label, value)) = key.split_once("=") {
-                    if let Ok(progress_value) = value.parse::<usize>() {
-                        progress = Some(progress_value);
+                if let Some((label, value)) = key.split_once("=") {
+                    if label == "progress" {
+                        if let Ok(progress_value) = value.parse::<f32>() {
+                            progress = Some(progress_value);
+                        }
+                    }
+                    if label == "written" {
+                        if let Ok(w) = value.parse::<usize>() {
+                            written = w;
+                        }
+                    }
+                    if label == "total" {
+                        if let Ok(w) = value.parse::<usize>() {
+                            total = w;
+                        }
                     }
                 }
             }
 
             if let Some(value) = progress {
-                Some(ProgressStatus::new(value))
+                Some(UploadProgressStatus::new(
+                    req_path,
+                    request_uuid,
+                    written,
+                    total,
+                    value,
+                ))
             } else {
                 None
             }
         }
-        pub fn progress(&self) -> usize {
+        pub fn progress(&self) -> f32 {
             self.completed
         }
     }
@@ -411,8 +518,8 @@ mod response_builder {
                 end,
             }
         }
-        pub fn body_type(&self) -> BodyType {
-            BodyType::parse_packet(&self.packet)
+        pub fn body_type(&self, req_path: &str, req_uuid: Uuid) -> BodyType {
+            BodyType::parse_packet(&self.packet, req_path, req_uuid)
         }
         pub fn ids(&self) -> (u64, String) {
             (self.stream_id, self.connexion_id.to_owned())
@@ -435,12 +542,12 @@ mod response_builder {
     }
 
     pub enum BodyType<'a> {
-        ProgressStatusBody(ProgressStatus),
+        UploadProgressStatusBody(UploadProgressStatus),
         Packet(&'a [u8]),
         Err(()),
     }
     impl<'a> BodyType<'a> {
-        pub fn parse_packet(packet: &'a [u8]) -> Self {
+        pub fn parse_packet(packet: &'a [u8], req_path: &str, req_uuid: Uuid) -> Self {
             if packet.len() < 4 {
                 return Self::Packet(packet);
             }
@@ -448,8 +555,10 @@ mod response_builder {
             let (prefix, suffix) = packet.split_at(4);
 
             if prefix == b"s??%" {
-                if let Some(progress_status) = ProgressStatus::from_bytes(suffix) {
-                    Self::ProgressStatusBody(progress_status)
+                if let Some(progress_status) =
+                    UploadProgressStatus::from_bytes(req_path, req_uuid, suffix)
+                {
+                    Self::UploadProgressStatusBody(progress_status)
                 } else {
                     Self::Err(())
                 }
@@ -464,13 +573,13 @@ mod response_builder {
         stream_id: u64,
         connexion_id: String,
         response_channel: crossbeam::channel::Receiver<CompletedResponse>,
-        progress_channel: crossbeam::channel::Receiver<ProgressStatus>,
+        progress_channel: crossbeam::channel::Receiver<UploadProgressStatus>,
     }
     impl WaitPeerResponse {
         pub fn new(
             stream_ids: &(u64, String),
             response_channel: crossbeam::channel::Receiver<CompletedResponse>,
-            progress_channel: crossbeam::channel::Receiver<ProgressStatus>,
+            progress_channel: crossbeam::channel::Receiver<UploadProgressStatus>,
         ) -> WaitPeerResponse {
             WaitPeerResponse {
                 stream_id: stream_ids.0,
@@ -481,7 +590,7 @@ mod response_builder {
         }
         ///
         ///
-        /// With ProgressStatus parameter, client can  retrieve some informations on reception status from the server.
+        /// With UploadProgressStatus parameter, client can  retrieve some informations on reception status from the server.
         ///
         ///
         ///
@@ -490,7 +599,7 @@ mod response_builder {
         ///
         pub fn with_progress_callback(
             self,
-            progress_cb: impl Fn(ProgressStatus) + Send + 'static,
+            progress_cb: impl Fn(UploadProgressStatus) + Send + 'static,
         ) -> Self {
             let receiver = self.progress_channel.clone();
             std::thread::Builder::new()
@@ -507,10 +616,12 @@ mod response_builder {
             self.response_channel.recv()
         }
     }
-    #[derive(Debug)]
     pub struct PartialResponse {
         stream_id: u64,
         connexion_id: String,
+        request_uuid: Uuid,
+        req_path: String,
+        event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
         headers: Option<Vec<h3::Header>>,
         content_length: Option<usize>,
         data: Vec<u8>,
@@ -520,21 +631,36 @@ mod response_builder {
             crossbeam::channel::Receiver<CompletedResponse>,
         ),
         progress_channel: (
-            crossbeam::channel::Sender<ProgressStatus>,
-            crossbeam::channel::Receiver<ProgressStatus>,
+            crossbeam::channel::Sender<UploadProgressStatus>,
+            crossbeam::channel::Receiver<UploadProgressStatus>,
         ),
     }
+    impl Debug for PartialResponse {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Partial response stream_id [{}] | connexion_id [{}] | request_uuid [{}] | headers [{:?}] | ", self.stream_id, self.connexion_id, self.request_uuid, self.headers)
+        }
+    }
     impl PartialResponse {
+        /// Create a new partial partial response. It is a buffer type that keep track of the
+        /// progression of the response.
+        /// Create a UUid for this stream for event management purpose in the program that called
+        /// this request.
         pub fn new(
+            req_path: &str,
+            event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
             stream_ids: &(u64, String),
         ) -> (
             Self,
             crossbeam::channel::Receiver<CompletedResponse>,
-            crossbeam::channel::Receiver<ProgressStatus>,
+            crossbeam::channel::Receiver<UploadProgressStatus>,
         ) {
+            let request_uuid = Uuid::new_v4();
             let partial_response = Self {
                 stream_id: stream_ids.0,
                 connexion_id: stream_ids.1.to_owned(),
+                request_uuid,
+                req_path: req_path.to_string(),
+                event_subscriber,
                 headers: None,
                 content_length: None,
                 packet_count: 0,
@@ -566,6 +692,7 @@ mod response_builder {
         ///
         pub fn extend_data(&mut self, server_packet: Http3Response) -> bool {
             let mut can_delete_in_table = false;
+
             match server_packet {
                 Http3Response::Header(headers) => {
                     if let Some(_status_100) = headers
@@ -582,7 +709,13 @@ mod response_builder {
                                 String::from_utf8_lossy(progress.value()).parse::<usize>()
                             {
                                 if let Err(e) =
-                                    self.progress_channel.0.send(ProgressStatus::new(len))
+                                    self.progress_channel.0.send(UploadProgressStatus::new(
+                                        self.req_path.as_str(),
+                                        self.request_uuid,
+                                        len,
+                                        0,
+                                        0.0,
+                                    ))
                                 {
                                     debug!(
                         "Error: Failed sending progress status for stream_id [{}] -> [{:?}]",
@@ -647,9 +780,31 @@ mod response_builder {
                         )
                         .parse::<usize>()
                         .unwrap();
+                        let content_len = String::from_utf8_lossy(
+                            headers
+                                .iter()
+                                .find(|hdr| hdr.name() == b"content-length")
+                                .unwrap()
+                                .value(),
+                        )
+                        .parse::<usize>()
+                        .unwrap_or(0);
+                        let percentage_completed = self.data.len() / content_len;
+
                         if body.packet.len() > 0 {
                             self.packet_count += 1;
                             self.data.extend_from_slice(body.packet());
+                        }
+                        for sub in &self.event_subscriber {
+                            if let Err(e) = sub.on_download_progress(DownloadProgressStatus::new(
+                                self.req_path.as_str(),
+                                self.request_uuid,
+                                self.data.len(),
+                                content_len,
+                                self.data.len() as f32 / content_len as f32,
+                            )) {
+                                error!("Failed to send Upload progress")
+                            }
                         }
 
                         if body.is_end() {
@@ -660,14 +815,20 @@ mod response_builder {
                             );
                             if let Some(total_len) = self.content_length {
                                 let percentage_completed =
-                                    ((self.data.len() as f32 / total_len as f32) * 100.0) as usize;
+                                    self.data.len() as f32 / total_len as f32;
 
-                                if let Err(e) = self
-                                    .progress_channel
-                                    .0
-                                    .send(ProgressStatus::new(percentage_completed))
-                                {
-                                    error!("Failed sending percentage completion [{:?}]", e);
+                                for sub in &self.event_subscriber {
+                                    if let Err(e) =
+                                        sub.on_upload_progress(UploadProgressStatus::new(
+                                            self.req_path.as_str(),
+                                            self.request_uuid,
+                                            self.data.len(),
+                                            total_len,
+                                            percentage_completed,
+                                        ))
+                                    {
+                                        error!("Failed to send Upload progress")
+                                    }
                                 }
                             }
                             if status == 200 {
@@ -695,9 +856,13 @@ mod response_builder {
                         if body.is_end() {
                             warn!("no header .")
                         }
-                        if let BodyType::ProgressStatusBody(progress_status) = body.body_type() {
-                            if let Err(e) = self.progress_channel.0.send(progress_status) {
-                                error!("Failed sending percentage completion [{:?}]", e);
+                        if let BodyType::UploadProgressStatusBody(progress_status) =
+                            body.body_type(self.req_path.as_str(), self.request_uuid)
+                        {
+                            for sub in &self.event_subscriber {
+                                if let Err(e) = sub.on_upload_progress(progress_status.clone()) {
+                                    error!("Failed to send Upload progress")
+                                }
                             }
                             return false;
                         }
@@ -715,7 +880,7 @@ mod response_manager_worker {
         sync::{Arc, Mutex},
     };
 
-    use log::{debug, info};
+    use log::{debug, info, warn};
 
     use self::{response_builder::PartialResponse, response_mngr::PartialResponseReceiver};
 

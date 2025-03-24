@@ -5,9 +5,12 @@ mod response_manager;
 pub use body_manager::{BodyChannel, BodyHead, BodyQueue};
 pub use client_request_manager::ClientRequestManager;
 pub use request_manager::{
-    BodyType, ContentType, H3Method, Http3Request, RequestChannel, RequestQueue,
+    BodyType, ContentType, H3Method, Http3Request, ProgressTracker, RequestChannel, RequestEvent,
+    RequestEventListener, RequestQueue,
 };
-pub use response_manager::{Http3Response, ResponseChannel, ResponseHead, ResponseQueue};
+pub use response_manager::{
+    Http3Response, ResponseChannel, ResponseHead, ResponseQueue, UploadProgressStatus,
+};
 
 pub use super::client_config::ConnexionInfos;
 use super::client_init::Http3Client;

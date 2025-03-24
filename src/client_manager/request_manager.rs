@@ -1,11 +1,13 @@
 #![allow(warnings)]
 mod request_body;
+pub use event_listener::{ProgressTracker, RequestEvent, RequestEventListener};
 pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
 pub use request_body::ContentType;
 pub use request_builder::{
     Http3Request, Http3RequestBuilder, Http3RequestConfirm, Http3RequestPrep,
 };
 pub use request_format::{BodyType, H3Method};
+mod event_listener;
 mod queue_builder {
     use std::time::{Duration, Instant};
 
@@ -157,12 +159,15 @@ mod request_builder {
         io::Read,
         net::SocketAddr,
         path::{Path, PathBuf},
+        sync::Arc,
     };
 
     use log::debug;
     use quiche::h3::{self, Header};
 
-    use self::{request_body::RequestBody, request_format::H3Method};
+    use self::{
+        event_listener::RequestEventListener, request_body::RequestBody, request_format::H3Method,
+    };
 
     use super::*;
 
@@ -200,6 +205,7 @@ mod request_builder {
                 path: None,
                 scheme: None,
                 content_type: None,
+                event_subscriber: vec![],
                 user_agent: None,
                 authority: peer_socket_address,
                 custom_headers: None,
@@ -355,6 +361,7 @@ mod request_builder {
                 path: None,
                 scheme: None,
                 content_type: None,
+                event_subscriber: vec![],
                 user_agent: None,
                 authority: peer_socket_address,
                 custom_headers: None,
@@ -368,6 +375,7 @@ mod request_builder {
         path: Option<&'static str>,
         scheme: Option<&'static str>,
         content_type: Option<String>,
+        event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
         user_agent: Option<&'static str>,
         authority: Option<SocketAddr>,
         custom_headers: Option<Vec<(&'static str, &'static str)>>,
@@ -376,6 +384,13 @@ mod request_builder {
     impl Http3RequestBuilder {
         pub fn post_data(&mut self, path: &'static str, data: Vec<u8>) -> &mut Self {
             self.post(path, RequestBody::new_data(data))
+        }
+        pub fn get_path(&self) -> Option<String> {
+            if let Some(path) = self.path.as_ref() {
+                Some(path.to_string())
+            } else {
+                None
+            }
         }
         pub fn post_file(
             &mut self,
@@ -420,13 +435,27 @@ mod request_builder {
             self.content_type = Some(content_type.to_string());
             self
         }
+        pub fn subscribe_event(
+            &mut self,
+            event_listener: Arc<dyn RequestEventListener + 'static + Send + Sync>,
+        ) {
+            self.event_subscriber.push(event_listener);
+        }
         pub fn build(
             &mut self,
-        ) -> Result<(Vec<Http3RequestPrep>, Option<Http3RequestConfirm>), ()> {
+        ) -> Result<
+            (
+                Vec<Http3RequestPrep>,
+                Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
+                Option<Http3RequestConfirm>,
+            ),
+            (),
+        > {
             if self.method.is_none() || self.path.is_none() || self.authority.is_none() {
                 debug!("http3 request, nothing to build !");
                 return Err(());
             }
+            let event_subscriber = std::mem::replace(&mut self.event_subscriber, vec![]);
             let body = Some(vec![1000]);
             let (sender, receiver) = crossbeam::channel::bounded::<(u64, String)>(1);
             let confirmation = Some(Http3RequestConfirm { response: receiver });
@@ -486,7 +515,7 @@ mod request_builder {
             };
 
             if !http_request_prep.is_empty() {
-                Ok((http_request_prep, confirmation))
+                Ok((http_request_prep, event_subscriber, confirmation))
             } else {
                 Err(())
             }
@@ -705,7 +734,7 @@ mod test {
         let request = request.unwrap();
 
         assert!(!request.0.is_empty());
-        assert!(request.1.is_some());
+        assert!(request.2.is_some());
 
         // Get method build only 1 request header
         assert!(request.0.len() == 2);
@@ -783,7 +812,7 @@ mod test {
         let request = request.unwrap();
 
         assert!(!request.0.is_empty());
-        assert!(request.1.is_some());
+        assert!(request.2.is_some());
 
         // Get method build only 1 request header
         assert!(request.0.len() == 1);
