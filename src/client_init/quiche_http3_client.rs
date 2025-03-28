@@ -604,6 +604,7 @@ fn handle_outgoing_packets(
     loop {
         if let Some(last_instant) = last_instant {
             if Instant::now() <= *last_instant {
+                std::thread::yield_now();
                 continue;
             }
             remaining_time = None;

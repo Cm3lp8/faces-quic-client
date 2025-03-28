@@ -21,19 +21,32 @@ fn main() {
             info!("upload[{}]", progress.progress());
         }
         RequestEvent::DownloadProgress(progress) => {
-            info!("download = [{}]", progress.progress());
+            info!(
+                "[{:?}] [{}] download = [{}]",
+                progress.req_path(),
+                progress.uuid(),
+                progress.progress()
+            );
         }
     });
 
     let res = client
         .new_request(|req| {
-            req.post_data("/large_data", vec![8; 60_000_000])
+            req.post_data("/large_data", vec![8; 1])
                 .set_user_agent("camille_0");
-            req.subscribe_event(progress_tracker);
+            req.subscribe_event(progress_tracker.clone());
+        })
+        .unwrap();
+    let res_1 = client
+        .new_request(|req| {
+            req.get("/test").set_user_agent("camille_0");
+            req.subscribe_event(progress_tracker.clone());
         })
         .unwrap();
 
     let res = res.wait_response();
 
+    let res_r = res_1.wait_response();
     warn!("recv [{}]", res.unwrap().take_data().len());
+    warn!("recv [{}]", res_r.unwrap().take_data().len());
 }

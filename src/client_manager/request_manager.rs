@@ -162,7 +162,7 @@ mod request_builder {
         sync::Arc,
     };
 
-    use log::debug;
+    use log::{debug, error};
     use quiche::h3::{self, Header};
 
     use self::{
@@ -439,7 +439,7 @@ mod request_builder {
             &mut self,
             event_listener: Arc<dyn RequestEventListener + 'static + Send + Sync>,
         ) {
-            self.event_subscriber.push(event_listener);
+            self.event_subscriber.push(event_listener.clone());
         }
         pub fn build(
             &mut self,
@@ -455,6 +455,7 @@ mod request_builder {
                 debug!("http3 request, nothing to build !");
                 return Err(());
             }
+
             let event_subscriber = std::mem::replace(&mut self.event_subscriber, vec![]);
             let body = Some(vec![1000]);
             let (sender, receiver) = crossbeam::channel::bounded::<(u64, String)>(1);
@@ -477,6 +478,10 @@ mod request_builder {
                         .add_header("accept", "*/*"),
                 )],
                 H3Method::POST { mut payload } => {
+                    if payload.len() == 0 {
+                        error!("Payload must be > to 0 bytes");
+                        return Err(());
+                    }
                     let mut content_type: Option<h3::Header> = None;
                     if let RequestBody::File(_) = &payload {
                         if let Some(content_type_set) = &self.content_type {
