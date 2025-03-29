@@ -39,7 +39,8 @@ fn main() {
         .unwrap();
     let res_1 = client
         .new_request(|req| {
-            req.get("/test").set_user_agent("camille_0");
+            req.post_data("/large_data", vec![9; 90_000_000])
+                .set_user_agent("camille_0");
             req.subscribe_event(progress_tracker.clone());
         })
         .unwrap();

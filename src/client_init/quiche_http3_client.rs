@@ -680,7 +680,7 @@ fn handle_writable(
                 continue;
             }
 
-            if let Ok(write) = conn.stream_writable(stream_id, body.len()) {
+            if let Ok(write) = conn.stream_writable(stream_id, 512) {
                 can_write = write;
             }
 
@@ -699,7 +699,6 @@ fn handle_writable(
                             len
                         );
                         if v == body.len() {
-                            let _ = send_confirmation_to_reader.send(Instant::now());
                             *body = vec![];
                         }
                         if v < body.len() {
