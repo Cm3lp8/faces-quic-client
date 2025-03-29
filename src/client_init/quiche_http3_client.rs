@@ -316,9 +316,7 @@ pub fn run(
                             }
                         }
                         Http3Request::Body(mut body_req) => {
-                            if body_req.len()
-                                > conn.stream_capacity(body_req.stream_id()).unwrap_or(0)
-                            {
+                            if !conn.stream_writable(body_req.stream_id(), 512).unwrap() {
                                 pending_bodies
                                     .entry(body_req.stream_id())
                                     .or_default()
@@ -624,6 +622,12 @@ fn handle_outgoing_packets(
                 break;
             }
         };
+
+        let path_stats = conn.path_stats().next().unwrap();
+        debug!(
+            "rttvar [{:?}]  [{}]  cwnd [{}]",
+            path_stats.rttvar, path_stats.delivery_rate, path_stats.cwnd
+        );
 
         *last_instant = Some(send_info.at);
 

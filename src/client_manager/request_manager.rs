@@ -87,7 +87,7 @@ mod queue_builder {
                         debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
                         break;
                     }
-                    std::thread::sleep(Duration::from_micros(100));
+                    std::thread::sleep(Duration::from_micros(150));
                     byte_send += n;
                     packet_count += 1;
                     last_send = Instant::now();
