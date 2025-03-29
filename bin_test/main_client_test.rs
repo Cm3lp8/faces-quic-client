@@ -32,7 +32,7 @@ fn main() {
 
     let res = client
         .new_request(|req| {
-            req.post_data("/large_data", vec![8; 1])
+            req.post_data("/large_data", vec![8; 150_000_000])
                 .set_user_agent("camille_0");
             req.subscribe_event(progress_tracker.clone());
         })

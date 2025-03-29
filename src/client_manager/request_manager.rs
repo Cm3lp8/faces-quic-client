@@ -87,14 +87,13 @@ mod queue_builder {
                         debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
                         break;
                     }
-                    let _ = adjust_duration.1.recv();
+                    std::thread::sleep(Duration::from_micros(100));
                     byte_send += n;
                     packet_count += 1;
                     last_send = Instant::now();
                     if byte_send == body_total_len {
                         break;
                     }
-                    if let Ok(new_instant) = adjust_duration.1.recv() {}
                 }
                 warn!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
