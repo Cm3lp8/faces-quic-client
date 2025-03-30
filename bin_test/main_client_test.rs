@@ -31,23 +31,31 @@ fn main() {
     });
 
     let res = client
-        .new_request(|req| {
-            req.post_data("/large_data", vec![8; 150_000_000])
-                .set_user_agent("camille_0");
-            req.subscribe_event(progress_tracker.clone());
-        })
+        .get("/test_mini")
+        .set_user_agent("camille_2")
+        .subscribe_event(progress_tracker.clone())
+        .send()
         .unwrap();
-    let res_1 = client
-        .new_request(|req| {
-            req.post_data("/large_data", vec![9; 90_000_000])
-                .set_user_agent("camille_0");
-            req.subscribe_event(progress_tracker.clone());
-        })
+    let res_2 = client
+        .post_data("/large_data", vec![8; 19])
+        .set_user_agent("camille_2")
+        .subscribe_event(progress_tracker.clone())
+        .send()
         .unwrap();
 
+    /*
+        let res_1 = client
+            .new_request(|req| {
+                req.post_data("/large_data", vec![9; 90_000_000])
+                    .set_user_agent("camille_0");
+                req.subscribe_event(progress_tracker.clone());
+            })
+            .unwrap();
+    */
     let res = res.wait_response();
 
-    let res_r = res_1.wait_response();
     warn!("recv [{}]", res.unwrap().take_data().len());
-    warn!("recv [{}]", res_r.unwrap().take_data().len());
+    let res_2 = res_2.wait_response();
+
+    warn!("recv [{}]", res_2.unwrap().take_data().len());
 }

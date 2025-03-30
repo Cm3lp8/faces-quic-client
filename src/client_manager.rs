@@ -18,11 +18,21 @@ pub use client_management::Http3ClientManager;
 
 mod client_management {
 
-    use std::sync::Arc;
+    use std::{
+        collections::HashMap,
+        hash::Hash,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
+
+    use uuid::Uuid;
 
     use crate::client_config::{self, ClientConfig};
 
-    use self::{request_manager::Http3RequestBuilder, response_manager::WaitPeerResponse};
+    use self::{
+        request_manager::{Http3RequestBuilder, Http3RequestPrep},
+        response_manager::WaitPeerResponse,
+    };
 
     use super::*;
 
@@ -31,6 +41,7 @@ mod client_management {
         response_channel: ResponseChannel,
         body_channel: BodyChannel,
         request_manager: ClientRequestManager,
+        request_builder: Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
         connexion_infos: ConnexionInfos,
         http3_client: Arc<Http3Client>,
     }
@@ -42,6 +53,7 @@ mod client_management {
                 response_channel: self.response_channel.clone(),
                 body_channel: self.body_channel.clone(),
                 request_manager: self.request_manager.clone(),
+                request_builder: Arc::new(Mutex::new(HashMap::new())),
                 connexion_infos: self.connexion_infos.clone(),
                 http3_client: self.http3_client.clone(),
             }
@@ -71,6 +83,8 @@ mod client_management {
                 response_channel.get_head(),
                 body_channel.get_queue(),
             );
+            let request_builder: Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>> =
+                Arc::new(Mutex::new(HashMap::new()));
             let http3_client_arc = Arc::new(http3_client);
             let http3_client_arc_clone = http3_client_arc.clone();
             let request_manager = ClientRequestManager::new(
@@ -86,12 +100,47 @@ mod client_management {
                 response_channel,
                 body_channel,
                 request_manager,
+                request_builder,
                 connexion_infos: client_config.connexion_infos(),
                 http3_client: http3_client_arc_clone,
             }
         }
+
         pub fn builder() -> () {
             ()
+        }
+
+        pub fn get(&self, path: &'static str) -> ReqBuilderOutput {
+            let reqbuild_uuid = uuid::Uuid::new_v4();
+            let mut http3_request_builder = Http3RequestPrep::new(
+                self.connexion_infos.get_peer_socket_address(),
+                reqbuild_uuid,
+            );
+            http3_request_builder.get(path);
+
+            self.request_builder
+                .lock()
+                .unwrap()
+                .entry(reqbuild_uuid)
+                .insert_entry(http3_request_builder);
+
+            ReqBuilderOutput(reqbuild_uuid, self)
+        }
+        pub fn post_data(&self, path: &'static str, data: Vec<u8>) -> ReqBuilderOutput {
+            let reqbuild_uuid = uuid::Uuid::new_v4();
+            let mut http3_request_builder = Http3RequestPrep::new(
+                self.connexion_infos.get_peer_socket_address(),
+                reqbuild_uuid,
+            );
+            http3_request_builder.post_data(path, data);
+
+            self.request_builder
+                .lock()
+                .unwrap()
+                .entry(reqbuild_uuid)
+                .insert_entry(http3_request_builder);
+
+            ReqBuilderOutput(reqbuild_uuid, self)
         }
 
         pub fn new_request(
@@ -136,5 +185,39 @@ mod client_management {
                     self.body_channel.get_queue()
                 }
         */
+    }
+
+    pub struct ReqBuilderOutput<'a>(Uuid, &'a Http3ClientManager);
+
+    impl<'a> ReqBuilderOutput<'a> {
+        pub fn send(&self) -> Result<WaitPeerResponse, ()> {
+            let uuid = self.0;
+
+            if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
+                return self.1.request_manager.new_request_with_builder(entry);
+            }
+            Err(())
+        }
+        pub fn set_user_agent(&self, user_agent: &'static str) -> &Self {
+            let uuid = self.0;
+
+            if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
+                entry.set_user_agent(user_agent);
+            }
+
+            self
+        }
+        pub fn subscribe_event(
+            &self,
+            event_listener: Arc<dyn RequestEventListener + 'static + Send + Sync>,
+        ) -> &Self {
+            let uuid = self.0;
+
+            if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
+                entry.subscribe_event(event_listener);
+            }
+
+            self
+        }
     }
 }

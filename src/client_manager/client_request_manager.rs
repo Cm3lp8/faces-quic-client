@@ -8,6 +8,7 @@ mod client_request_mngr {
 
     use log::warn;
     use mio::Waker;
+    use uuid::Uuid;
 
     use crate::{
         client_config::ConnexionInfos,
@@ -75,6 +76,111 @@ mod client_request_mngr {
                 }
             }
         }
+        pub fn new_request_with_builder(
+            &self,
+            http3_request_builder: &mut Http3RequestBuilder,
+        ) -> Result<WaitPeerResponse, ()> {
+            let path = http3_request_builder.get_path();
+            match http3_request_builder.build() {
+                Ok((http3_request, event_subscriber, http3_confirm)) => {
+                    /*
+                     *
+                     * if connexion is closed, open it :
+                     *
+                     * */
+                    println!("Sending new_request");
+                    if self.http3_client.is_off() {
+                        println!("Connect...");
+                        if let Ok((_conn_id, waker)) = self.http3_client.connect() {
+                            *self.waker.lock().unwrap() = Some(waker);
+                            println!("Connected !  waker received ");
+                        }
+                        println!("Connected !");
+                    }
+
+                    for req in &http3_request {
+                        match req {
+                            Http3RequestPrep::Header(header_req) => {
+                                let adjust_sending_duration =
+                                    crossbeam::channel::bounded::<Instant>(1);
+                                if let Err(e) = self.request_head.send_request((
+                                    Http3Request::Header(header_req.clone()),
+                                    adjust_sending_duration.0,
+                                )) {
+                                    println!("Error sending header request [{:?}]", e)
+                                } else {
+                                    println!("Success: sending header request");
+                                    self.wake_client();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let stream_ids = http3_confirm.unwrap().wait_stream_ids();
+                    let stream_id = stream_ids.as_ref().unwrap().0;
+
+                    for req in http3_request {
+                        match req {
+                            Http3RequestPrep::Body(body_req) => {
+                                self.request_head
+                                    .send_body(stream_id, 8192, body_req.take());
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let response_manager_submission = self.response_manager.submitter();
+                    let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
+                    let response_sender = response_chan.0.clone();
+
+                    std::thread::spawn(move || {
+                        /*
+                         *
+                         * wait here the stream_id with the response confirm
+                         *
+                         * */
+                        if let Ok(stream_ids) = stream_ids {
+                            let (partial_response, completed_channel, progress_channel) =
+                                PartialResponse::new(
+                                    path.unwrap().as_str(),
+                                    event_subscriber,
+                                    &stream_ids,
+                                );
+
+                            let peer_response = WaitPeerResponse::new(
+                                &stream_ids,
+                                completed_channel,
+                                progress_channel,
+                            );
+                            if let Err(e) = response_sender.send(peer_response) {
+                                println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
+                            }
+
+                            //send partial response to the reponse manager
+                            if let Err(e) = response_manager_submission.submit(partial_response) {
+                                println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
+                            }
+                        }
+
+                        /*
+                         *
+                         *
+                         * Get the response back -> ask the response table in the response worker
+                         * with the stream_id that is unique per connexion
+                         *
+                         *
+                         * */
+                    });
+
+                    if let Ok(response) = response_chan.1.recv() {
+                        Ok(response)
+                    } else {
+                        Err(())
+                    }
+                }
+                Err(()) => Err(()),
+            }
+        }
 
         ///
         ///create a new http3 request. Returns a lazy Http3Response as Result (lazy : response fetching
@@ -84,8 +190,10 @@ mod client_request_mngr {
             &self,
             request_builder: impl FnOnce(&mut Http3RequestBuilder),
         ) -> Result<WaitPeerResponse, ()> {
-            let mut http3_request_builder =
-                Http3RequestPrep::new(self.connexion_infos.get_peer_socket_address());
+            let mut http3_request_builder = Http3RequestPrep::new(
+                self.connexion_infos.get_peer_socket_address(),
+                Uuid::new_v4(),
+            );
             request_builder(&mut http3_request_builder);
 
             let path = http3_request_builder.get_path();
