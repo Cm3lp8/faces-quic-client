@@ -142,6 +142,26 @@ mod client_management {
 
             ReqBuilderOutput(reqbuild_uuid, self)
         }
+        pub fn post_file(
+            &self,
+            path: &'static str,
+            file_path: impl AsRef<Path>,
+        ) -> ReqBuilderOutput {
+            let reqbuild_uuid = uuid::Uuid::new_v4();
+            let mut http3_request_builder = Http3RequestPrep::new(
+                self.connexion_infos.get_peer_socket_address(),
+                reqbuild_uuid,
+            );
+            http3_request_builder.post_file(path, file_path);
+
+            self.request_builder
+                .lock()
+                .unwrap()
+                .entry(reqbuild_uuid)
+                .insert_entry(http3_request_builder);
+
+            ReqBuilderOutput(reqbuild_uuid, self)
+        }
 
         pub fn new_request(
             &self,

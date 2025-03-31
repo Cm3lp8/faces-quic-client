@@ -729,6 +729,8 @@ mod response_builder {
                         }
                         return false;
                     }
+
+                    debug!("Headers [{:?}]", headers.headers());
                     self.headers = Some(headers.headers().to_vec());
 
                     let _content_length = if let Some(content_length) = headers
@@ -745,11 +747,6 @@ mod response_builder {
                         };
                     };
 
-                    warn!(
-                        "HEADER [{:?}] is end [{}]",
-                        headers.headers,
-                        headers.is_end()
-                    );
                     if headers.is_end() {
                         if let Err(e) = self.response_channel.0.send(CompletedResponse::new(
                             self.stream_id,
@@ -808,11 +805,6 @@ mod response_builder {
                         }
 
                         if body.is_end() {
-                            warn!(
-                                "body size [{:?}] for |[{}]",
-                                self.data.len(),
-                                self.stream_id
-                            );
                             if let Some(total_len) = self.content_length {
                                 let percentage_completed =
                                     self.data.len() as f32 / total_len as f32;
@@ -853,9 +845,6 @@ mod response_builder {
                             }
                         }
                     } else {
-                        if body.is_end() {
-                            warn!("no header .")
-                        }
                         if let BodyType::UploadProgressStatusBody(progress_status) =
                             body.body_type(self.req_path.as_str(), self.request_uuid)
                         {
@@ -899,24 +888,10 @@ mod response_manager_worker {
         let partial_table_clone_1 = partial_response_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
-                if server_response.is_end() {
-                    info!(
-                        "fin stream [{}] len [{:?}]",
-                        server_response.stream_id(),
-                        server_response.len()
-                    );
-                }
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
-                    if server_response.is_end() {
-                        info!(
-                            "entry stre[{stream_id}] [{:?}] \n[{:#?}]",
-                            server_response,
-                            entry.data_len()
-                        );
-                    }
                     delete_entry = entry.extend_data(server_response);
                 }
 

@@ -101,21 +101,7 @@ pub fn run(
         panic!("send() failed: {:?}", e);
     }
     let h3_config = quiche::h3::Config::new().unwrap();
-    // Prepare request.
-    /*
-        let path = b"/";
-        let req = vec![
-            quiche::h3::Header::new(b":method", b"GET"),
-            quiche::h3::Header::new(b":scheme", b"https"),
-            quiche::h3::Header::new(b":authority", b"127.0.0.1:3000"),
-            quiche::h3::Header::new(b":path", path),
-            quiche::h3::Header::new(b"user-agent", b"quiche"),
-        ];
-    */
 
-    if conn.is_established() {
-        info!("Connexion confirmed !");
-    }
     let mut conn_confirmation = false;
     let mut req_start = std::time::Instant::now();
     let mut bodies_send = 0;
@@ -200,10 +186,6 @@ pub fn run(
             loop {
                 match http3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
-                        warn!(
-                            "stream_id [{}]new HEADERS [{:#?}] more_frames[{more_frames}]",
-                            stream_id, list
-                        );
                         let _ = waker_1.wake();
                         if let Err(e) = response_queue.send_response(Http3Response::new_header(
                             stream_id,
@@ -231,11 +213,10 @@ pub fn run(
                             {
                                 info!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
                             };
-                            //   print!("{}", unsafe { std::str::from_utf8_unchecked(&buf[..read]) });
                         }
                     }
                     Ok((stream_id, quiche::h3::Event::Finished)) => {
-                        warn!("Finished stream [{stream_id}]!");
+                        debug!("Finished stream [{stream_id}]!");
                         debug!("response received in {:?}, closing...", req_start.elapsed());
                         if let Err(e) = response_queue.send_response(Http3Response::new_body_data(
                             stream_id,
@@ -357,13 +338,13 @@ pub fn run(
                                         }
 
                                         if body_req.is_end() {
-                                            warn!(
+                                            debug!(
                                                 " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_req.stream_id(),
                                                 h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
                                             );
 
                                             for i in pending_bodies.iter() {
-                                                warn!("[{:?}]", i)
+                                                debug!("[{:?}]", i)
                                             }
                                         }
                                         if let Ok(e) = adjust_send_timer.send(Instant::now()) {}

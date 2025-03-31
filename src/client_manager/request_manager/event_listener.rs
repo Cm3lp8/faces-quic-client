@@ -35,6 +35,7 @@ mod event_listener_implementations {
     pub enum RequestEvent {
         UploadProgress(UploadProgressStatus),
         DownloadProgress(DownloadProgressStatus),
+        ConnexionClosed(Vec<u8>),
     }
 
     pub trait EventAccess {

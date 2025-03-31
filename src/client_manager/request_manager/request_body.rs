@@ -72,7 +72,6 @@ mod rqst_body {
         pub fn new_file_path(path: PathBuf) -> RequestBody {
             if let Ok(c) = fs::exists(path.as_path()) {
                 if c {
-                    warn!(" file [{:?}] does exist", path.as_path());
                 } else {
                     error!("file [{:?}] doesn't exist", path.as_path());
                 }

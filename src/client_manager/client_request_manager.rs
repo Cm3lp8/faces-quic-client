@@ -88,14 +88,10 @@ mod client_request_mngr {
                      * if connexion is closed, open it :
                      *
                      * */
-                    println!("Sending new_request");
                     if self.http3_client.is_off() {
-                        println!("Connect...");
                         if let Ok((_conn_id, waker)) = self.http3_client.connect() {
                             *self.waker.lock().unwrap() = Some(waker);
-                            println!("Connected !  waker received ");
                         }
-                        println!("Connected !");
                     }
 
                     for req in &http3_request {
@@ -109,7 +105,6 @@ mod client_request_mngr {
                                 )) {
                                     println!("Error sending header request [{:?}]", e)
                                 } else {
-                                    println!("Success: sending header request");
                                     self.wake_client();
                                 }
                             }
@@ -204,14 +199,10 @@ mod client_request_mngr {
                      * if connexion is closed, open it :
                      *
                      * */
-                    println!("Sending new_request");
                     if self.http3_client.is_off() {
-                        println!("Connect...");
                         if let Ok((_conn_id, waker)) = self.http3_client.connect() {
                             *self.waker.lock().unwrap() = Some(waker);
-                            println!("Connected !  waker received ");
                         }
-                        println!("Connected !");
                     }
 
                     for req in &http3_request {
@@ -225,7 +216,6 @@ mod client_request_mngr {
                                 )) {
                                     println!("Error sending header request [{:?}]", e)
                                 } else {
-                                    println!("Success: sending header request");
                                     self.wake_client();
                                 }
                             }

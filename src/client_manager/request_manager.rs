@@ -59,7 +59,6 @@ mod queue_builder {
                         1
                     }
                 };
-                log::info!("Sending Body in [{}] packets", number_of_packet);
 
                 let mut packet_count = 0;
                 let send_duration = Instant::now();
@@ -95,7 +94,7 @@ mod queue_builder {
                         break;
                     }
                 }
-                warn!(
+                debug!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
                     byte_send, packet_count, send_duration.elapsed()
                 );

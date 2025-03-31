@@ -28,6 +28,7 @@ fn main() {
                 progress.progress()
             );
         }
+        RequestEvent::ConnexionClosed(scid) => {}
     });
 
     let res = client
@@ -36,25 +37,27 @@ fn main() {
         .subscribe_event(progress_tracker.clone())
         .send()
         .unwrap();
+
     let res_2 = client
-        .post_data("/large_data", vec![8; 19])
+        .post_file("/large_data", "/home/camille/llvm.sh")
+        .set_user_agent("camille_2")
+        .subscribe_event(progress_tracker.clone())
+        .send()
+        .unwrap();
+    let res_3 = client
+        .post_data(
+            "/large_data",
+            b"Hi it-s Coop, and I like coffee. But, Do you know where I can find Judy ?".to_vec(),
+        )
         .set_user_agent("camille_2")
         .subscribe_event(progress_tracker.clone())
         .send()
         .unwrap();
 
-    /*
-        let res_1 = client
-            .new_request(|req| {
-                req.post_data("/large_data", vec![9; 90_000_000])
-                    .set_user_agent("camille_0");
-                req.subscribe_event(progress_tracker.clone());
-            })
-            .unwrap();
-    */
-    let res = res.wait_response();
+    // let res = res.wait_response();
 
-    warn!("recv [{}]", res.unwrap().take_data().len());
+    //warn!("recv [{}]", res.unwrap().take_data().len());
+    let res_1 = res.wait_response();
     let res_2 = res_2.wait_response();
 
     warn!("recv [{}]", res_2.unwrap().take_data().len());

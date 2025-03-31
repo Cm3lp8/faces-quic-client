@@ -51,7 +51,6 @@ mod http3_client {
         pub fn connect(&self) -> Result<(String, Waker), ()> {
             if let Ok((conn_id, waker)) = self.run() {
                 *self.connexion_opened.lock().unwrap() = true;
-                println!("Connexion [{:?}] is opened", conn_id);
                 Ok((conn_id, waker))
             } else {
                 Err(())
@@ -78,7 +77,6 @@ mod http3_client {
                     body_queue,
                     confirmation_sender,
                 ) {
-                    println!("Closing connexion [{:?}]", finished);
                     *connexion_opened.lock().unwrap() = false;
                 };
             });
