@@ -9,7 +9,7 @@ pub use request_manager::{
     RequestEventListener, RequestQueue,
 };
 pub use response_manager::{
-    Http3Response, ResponseChannel, ResponseHead, ResponseQueue, UploadProgressStatus,
+    Http3Response, ReqStatus, ResponseChannel, ResponseHead, ResponseQueue, UploadProgressStatus,
 };
 
 pub use super::client_config::ConnexionInfos;
@@ -27,7 +27,10 @@ mod client_management {
 
     use uuid::Uuid;
 
-    use crate::client_config::{self, ClientConfig};
+    use crate::{
+        client_config::{self, ClientConfig},
+        client_traits::IntoBodyReq,
+    };
 
     use self::{
         request_manager::{Http3RequestBuilder, Http3RequestPrep},
@@ -126,13 +129,16 @@ mod client_management {
 
             ReqBuilderOutput(reqbuild_uuid, self)
         }
-        pub fn post_data(&self, path: &'static str, data: Vec<u8>) -> ReqBuilderOutput {
+        pub fn post_data(&self, path: &'static str, data: impl IntoBodyReq) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
                 reqbuild_uuid,
             );
-            http3_request_builder.post_data(path, data);
+            let content_type = data.content_type();
+            http3_request_builder
+                .post_data(path, data.into_bytes())
+                .set_content_type(content_type);
 
             self.request_builder
                 .lock()
@@ -217,6 +223,13 @@ mod client_management {
                 return self.1.request_manager.new_request_with_builder(entry);
             }
             Err(())
+        }
+        pub fn header(&self, name: &'static str, value: &'static str) -> &Self {
+            let uuid = self.0;
+            if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
+                entry.set_header(name, value);
+            }
+            self
         }
         pub fn set_user_agent(&self, user_agent: &'static str) -> &Self {
             let uuid = self.0;

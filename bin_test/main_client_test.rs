@@ -6,6 +6,8 @@ use std::{
 use faces_quic_client::*;
 use log::{debug, error, info, warn};
 
+use crate::{create_user_implementation::NewUser, other_json_struct::RequestError};
+
 fn main() {
     env_logger::init();
 
@@ -15,13 +17,16 @@ fn main() {
     let client = Http3ClientManager::new(peer);
 
     let progress_tracker = ProgressTracker::new();
+    let progress_tracker_2 = ProgressTracker::new();
+    let progress_tracker_3 = ProgressTracker::new();
+    let progress_tracker_4 = ProgressTracker::new();
 
     progress_tracker.run(|event| match event {
         RequestEvent::UploadProgress(progress) => {
-            info!("upload[{}]", progress.progress());
+            warn!("upload1[{}]", progress.progress());
         }
         RequestEvent::DownloadProgress(progress) => {
-            info!(
+            warn!(
                 "[{:?}] [{}] download = [{}]",
                 progress.req_path(),
                 progress.uuid(),
@@ -31,34 +36,85 @@ fn main() {
         RequestEvent::ConnexionClosed(scid) => {}
     });
 
-    let res = client
-        .get("/test_mini")
-        .set_user_agent("camille_2")
-        .subscribe_event(progress_tracker.clone())
-        .send()
-        .unwrap();
+    let new_user = NewUser::create("Camille", 36, "1234");
 
     let res_2 = client
-        .post_file("/large_data", "/home/camille/llvm.sh")
+        .post_data("/create_user", new_user)
         .set_user_agent("camille_2")
-        .subscribe_event(progress_tracker.clone())
-        .send()
-        .unwrap();
-    let res_3 = client
-        .post_data(
-            "/large_data",
-            b"Hi it-s Coop, and I like coffee. But, Do you know where I can find Judy ?".to_vec(),
-        )
-        .set_user_agent("camille_2")
-        .subscribe_event(progress_tracker.clone())
+        .header("x-name", "Cm3lp8")
+        .subscribe_event(progress_tracker_3.clone())
         .send()
         .unwrap();
 
-    // let res = res.wait_response();
+    let mut res_2 = res_2.wait_response().unwrap();
+    //let res_3 = res_3.wait_response();
 
-    //warn!("recv [{}]", res.unwrap().take_data().len());
-    let res_1 = res.wait_response();
-    let res_2 = res_2.wait_response();
+    info!("recv [{:?}]", res_2.headers());
 
-    warn!("recv [{}]", res_2.unwrap().take_data().len());
+    match res_2.status() {
+        ReqStatus::Success {
+            stream_id,
+            headers,
+            data,
+        } => {
+            info!("succes !!");
+        }
+        ReqStatus::Error {
+            stream_id,
+            headers,
+            data,
+        } => {
+            if let Some(error) = &data {
+                error!("[{:?}]", serde_json::from_slice::<RequestError>(error))
+            }
+        }
+        ReqStatus::None => {}
+    }
+}
+
+mod other_json_struct {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct RequestError {
+        error: String,
+    }
+}
+
+mod create_user_implementation {
+    use serde::{Deserialize, Serialize};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct UserCreated {
+        id: usize,
+        name: String,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct NewUser {
+        name: String,
+        age: u8,
+        password: String,
+        registration_demand_timestamp: u64,
+    }
+    impl Json for NewUser {
+        fn to_bytes_vec(&self) -> Result<Vec<u8>, serde_json::Error> {
+            serde_json::to_vec(self)
+        }
+    }
+    impl NewUser {
+        pub fn create(name: &str, age: u8, password: &str) -> Self {
+            let now = SystemTime::now();
+            Self {
+                name: name.to_owned(),
+                age,
+                password: password.to_owned(),
+                registration_demand_timestamp: SystemTime::duration_since(&now, UNIX_EPOCH)
+                    .expect("time can't be inferior to system_time")
+                    .as_secs(),
+            }
+        }
+    }
 }

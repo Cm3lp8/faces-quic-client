@@ -1,7 +1,7 @@
 pub use queue_builder::{ResponseChannel, ResponseHead, ResponseQueue};
 pub use response_builder::PartialResponse;
 pub use response_builder::{
-    DownloadProgressStatus, Http3Response, UploadProgressStatus, WaitPeerResponse,
+    DownloadProgressStatus, Http3Response, ReqStatus, UploadProgressStatus, WaitPeerResponse,
 };
 pub use response_mngr::ResponseManager;
 
@@ -163,6 +163,7 @@ mod response_builder {
 
     use log::{debug, error, info, warn};
     use quiche::h3::{self, Header, NameValue};
+    use serde::{Deserialize, Serialize};
     use uuid::Uuid;
 
     use crate::RequestEventListener;
@@ -319,6 +320,20 @@ mod response_builder {
         }
     }
 
+    pub enum ReqStatus {
+        Success {
+            stream_id: u64,
+            headers: Vec<h3::Header>,
+            data: Option<Vec<u8>>,
+        },
+        Error {
+            stream_id: u64,
+            headers: Vec<h3::Header>,
+            data: Option<Vec<u8>>,
+        },
+        None,
+    }
+
     impl CompletedResponse {
         pub fn new(stream_id: u64, headers: Vec<h3::Header>, data: Vec<u8>) -> Self {
             Self {
@@ -327,8 +342,67 @@ mod response_builder {
                 data,
             }
         }
-        pub fn take_data(&mut self) -> Vec<u8> {
+        pub fn raw_data(&mut self) -> Vec<u8> {
             std::mem::replace(&mut self.data, Vec::with_capacity(1))
+        }
+        pub fn status(&mut self) -> ReqStatus {
+            if let Some(status) = self.headers.iter().find(|hdr| hdr.name() == b":status") {
+                if status.value() == b"200" || status.value() == b"201" {
+                    ReqStatus::Success {
+                        stream_id: self.stream_id,
+                        headers: std::mem::replace(&mut self.headers, vec![]),
+                        data: if self.data.is_empty() {
+                            None
+                        } else {
+                            Some(std::mem::replace(&mut self.data, vec![]))
+                        },
+                    }
+                } else {
+                    ReqStatus::Error {
+                        stream_id: self.stream_id,
+                        headers: std::mem::replace(&mut self.headers, vec![]),
+                        data: if self.data.is_empty() {
+                            None
+                        } else {
+                            Some(std::mem::replace(&mut self.data, vec![]))
+                        },
+                    }
+                }
+            } else {
+                ReqStatus::None
+            }
+        }
+        pub fn has_body(&self) -> bool {
+            if self.data.is_empty() {
+                false
+            } else {
+                true
+            }
+        }
+        pub fn is_json(&self) -> bool {
+            if let Some(content_type) = self
+                .headers()
+                .iter()
+                .find(|hdr| hdr.name() == b"content-type")
+            {
+                if content_type.value() == b"application/json" {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+
+        pub fn get_json<'a, T: Deserialize<'a>>(&'a self) -> Result<T, ()> {
+            if self.is_json() && self.data.len() > 0 {
+                return serde_json::from_slice(&self.data).map_err(|e| ());
+            }
+            Err(())
+        }
+        pub fn headers(&self) -> Vec<h3::Header> {
+            self.headers.clone()
         }
     }
     ///
@@ -771,7 +845,7 @@ mod response_builder {
                         let status = String::from_utf8_lossy(
                             headers
                                 .iter()
-                                .find(|hdr| hdr.name() == b"status")
+                                .find(|hdr| hdr.name() == b":status")
                                 .unwrap()
                                 .value(),
                         )
@@ -823,7 +897,7 @@ mod response_builder {
                                     }
                                 }
                             }
-                            if status == 200 {
+                            if status != 100 {
                                 if let Err(e) =
                                     self.response_channel.0.send(CompletedResponse::new(
                                         self.stream_id,

@@ -462,7 +462,6 @@ mod request_builder {
             }
 
             let event_subscriber = std::mem::replace(&mut self.event_subscriber, vec![]);
-            let body = Some(vec![1000]);
             let (sender, receiver) = crossbeam::channel::bounded::<(u64, String)>(1);
             let confirmation = Some(Http3RequestConfirm { response: receiver });
 
@@ -488,14 +487,12 @@ mod request_builder {
                         return Err(());
                     }
                     let mut content_type: Option<h3::Header> = None;
-                    if let RequestBody::File(_) = &payload {
-                        if let Some(content_type_set) = &self.content_type {
-                            content_type = Some(h3::Header::new(
-                                b"content-type",
-                                content_type_set.as_bytes(),
-                            ));
-                        }
-                    };
+                    if let Some(content_type_set) = &self.content_type {
+                        content_type = Some(h3::Header::new(
+                            b"content-type",
+                            content_type_set.as_bytes(),
+                        ));
+                    }
                     vec![
                         Http3RequestPrep::Header(
                             HeaderRequest::new(false, sender)
