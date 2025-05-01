@@ -13,6 +13,7 @@ use std::{
 use crate::{
     client_config::ClientConfig,
     client_manager::{BodyQueue, Http3Request, Http3Response, RequestQueue, ResponseHead},
+    my_log,
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
 const WAKER_TOKEN: Token = Token(1);
@@ -278,6 +279,8 @@ pub fn run(
             let trace_id = conn.trace_id().to_string();
             if pending_bodies.is_empty() {
                 if let Some((req, adjust_send_timer)) = request_queue.pop_request() {
+                    my_log::debug("%%%%%% A REQ %%%");
+                    my_log::debug(&req);
                     match req {
                         Http3Request::Header(header_req) => {
                             if let Ok(stream_id) = h3_conn.send_request(
@@ -287,7 +290,7 @@ pub fn run(
                             ) {
                                 req_start = std::time::Instant::now();
                                 let _ = waker_1.wake();
-                                debug!("sended succes [{:?}]", header_req);
+                                my_log::debug(format!("sended succes [{:?}]", header_req));
                                 if let Err(e) = header_req.send_ids(stream_id, trace_id.as_str()) {
                                     debug!(
                                         "Error : Failed to send header request [{stream_id}], {:?}",

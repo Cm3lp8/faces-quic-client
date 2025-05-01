@@ -25,11 +25,14 @@ mod client_management {
         sync::{Arc, Mutex},
     };
 
+    use log::{error, info};
+    use ring::error;
     use uuid::Uuid;
 
     use crate::{
         client_config::{self, ClientConfig},
         client_traits::IntoBodyReq,
+        my_log,
     };
 
     use self::{
@@ -72,6 +75,7 @@ mod client_management {
         ///
         pub fn new(peer_socket_address: &str) -> Self {
             let client_config = ClientConfig::new();
+            my_log::init();
             client_config
                 .connexion_infos()
                 .set_peer_address(peer_socket_address)
@@ -113,13 +117,13 @@ mod client_management {
             ()
         }
 
-        pub fn get(&self, path: &'static str) -> ReqBuilderOutput {
+        pub fn get(&self, path: &str) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
                 reqbuild_uuid,
             );
-            http3_request_builder.get(path);
+            http3_request_builder.get(path.to_owned());
 
             self.request_builder
                 .lock()
@@ -129,7 +133,7 @@ mod client_management {
 
             ReqBuilderOutput(reqbuild_uuid, self)
         }
-        pub fn post_data(&self, path: &'static str, data: impl IntoBodyReq) -> ReqBuilderOutput {
+        pub fn post_data(&self, path: &str, data: impl IntoBodyReq) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
@@ -137,7 +141,7 @@ mod client_management {
             );
             let content_type = data.content_type();
             http3_request_builder
-                .post_data(path, data.into_bytes())
+                .post_data(path.to_string(), data.into_bytes())
                 .set_content_type(content_type);
 
             self.request_builder
@@ -148,17 +152,29 @@ mod client_management {
 
             ReqBuilderOutput(reqbuild_uuid, self)
         }
-        pub fn post_file(
-            &self,
-            path: &'static str,
-            file_path: impl AsRef<Path>,
-        ) -> ReqBuilderOutput {
+        pub fn post_file(&self, path: String, file_path: impl AsRef<Path>) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
                 reqbuild_uuid,
             );
             http3_request_builder.post_file(path, file_path);
+
+            self.request_builder
+                .lock()
+                .unwrap()
+                .entry(reqbuild_uuid)
+                .insert_entry(http3_request_builder);
+
+            ReqBuilderOutput(reqbuild_uuid, self)
+        }
+        pub fn delete(&self, path: String, auth_token: String) -> ReqBuilderOutput {
+            let reqbuild_uuid = uuid::Uuid::new_v4();
+            let mut http3_request_builder = Http3RequestPrep::new(
+                self.connexion_infos.get_peer_socket_address(),
+                reqbuild_uuid,
+            );
+            http3_request_builder.delete(path, auth_token);
 
             self.request_builder
                 .lock()
@@ -224,18 +240,18 @@ mod client_management {
             }
             Err(())
         }
-        pub fn header(&self, name: &'static str, value: &'static str) -> &Self {
+        pub fn header(&self, name: &str, value: &str) -> &Self {
             let uuid = self.0;
             if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
-                entry.set_header(name, value);
+                entry.set_header(name.to_string(), value.to_string());
             }
             self
         }
-        pub fn set_user_agent(&self, user_agent: &'static str) -> &Self {
+        pub fn set_user_agent(&self, user_agent: &str) -> &Self {
             let uuid = self.0;
 
             if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
-                entry.set_user_agent(user_agent);
+                entry.set_user_agent(user_agent.to_string());
             }
 
             self

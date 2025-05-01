@@ -342,6 +342,16 @@ mod response_builder {
                 data,
             }
         }
+        pub fn as_data(&self) -> &[u8] {
+            &self.data
+        }
+        pub fn status_code(&self) -> Option<Vec<u8>> {
+            if let Some(status) = self.headers.iter().find(|hdr| hdr.name() == b":status") {
+                Some(status.value().to_vec())
+            } else {
+                None
+            }
+        }
         pub fn raw_data(&mut self) -> Vec<u8> {
             std::mem::replace(&mut self.data, Vec::with_capacity(1))
         }
@@ -395,11 +405,11 @@ mod response_builder {
             }
         }
 
-        pub fn get_json<'a, T: Deserialize<'a>>(&'a self) -> Result<T, ()> {
+        pub fn get_json<'a, T: Deserialize<'a>>(&'a self) -> Result<T, String> {
             if self.is_json() && self.data.len() > 0 {
-                return serde_json::from_slice(&self.data).map_err(|e| ());
+                return serde_json::from_slice(&self.data).map_err(|e| e.to_string());
             }
-            Err(())
+            Err("No json".to_string())
         }
         pub fn headers(&self) -> Vec<h3::Header> {
             self.headers.clone()

@@ -6,7 +6,7 @@ mod client_request_mngr {
         time::{Duration, Instant},
     };
 
-    use log::warn;
+    use log::{error, info, warn};
     use mio::Waker;
     use uuid::Uuid;
 

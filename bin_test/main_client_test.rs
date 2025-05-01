@@ -6,7 +6,10 @@ use std::{
 use faces_quic_client::*;
 use log::{debug, error, info, warn};
 
-use crate::{create_user_implementation::NewUser, other_json_struct::RequestError};
+use crate::{
+    create_user_implementation::{NewUser, UserCreated},
+    other_json_struct::RequestError,
+};
 
 fn main() {
     env_logger::init();
@@ -57,7 +60,12 @@ fn main() {
             headers,
             data,
         } => {
-            info!("succes !!");
+            if let Some(data) = &data {
+                info!(
+                    "succes !! [{:#?}]",
+                    serde_json::from_slice::<UserCreated>(data)
+                );
+            }
         }
         ReqStatus::Error {
             stream_id,
@@ -65,7 +73,7 @@ fn main() {
             data,
         } => {
             if let Some(error) = &data {
-                error!("[{:?}]", serde_json::from_slice::<RequestError>(error))
+                error!("[{:#?}]", serde_json::from_slice::<RequestError>(error))
             }
         }
         ReqStatus::None => {}
@@ -88,8 +96,8 @@ mod create_user_implementation {
     use super::*;
     #[derive(Serialize, Deserialize, Debug)]
     pub struct UserCreated {
-        id: usize,
         name: String,
+        age: u8,
     }
 
     #[derive(Serialize, Deserialize)]

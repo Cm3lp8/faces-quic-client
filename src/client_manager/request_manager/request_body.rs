@@ -51,6 +51,7 @@ mod content_type {
 mod rqst_body {
     use core::panic;
     use std::{
+        fmt::Debug,
         fs::{self, File, OpenOptions},
         io::{BufRead, BufReader, BufWriter, Cursor, Error, ErrorKind, Read},
         path::{Path, PathBuf},
@@ -63,6 +64,11 @@ mod rqst_body {
         File(BufReader<File>),
         Stream(Box<dyn Read + Send + 'static>),
         Empty,
+    }
+    impl Debug for RequestBody {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "")
+        }
     }
 
     impl RequestBody {

@@ -152,16 +152,19 @@ mod queue_builder {
 }
 
 mod request_builder {
+    use core::panic;
     use std::{
         fmt::Debug,
         io::Read,
         net::SocketAddr,
         path::{Path, PathBuf},
         sync::Arc,
+        thread::panicking,
     };
 
-    use log::{debug, error};
+    use log::{debug, error, info, warn};
     use quiche::h3::{self, Header};
+    use ring::error;
     use uuid::Uuid;
 
     use self::{
@@ -192,6 +195,7 @@ mod request_builder {
     ///
     ///
     ///
+    #[derive(Debug)]
     pub enum Http3RequestPrep {
         Body(Content),
         Header(HeaderRequest),
@@ -249,6 +253,7 @@ mod request_builder {
         }
     }
 
+    #[derive(Debug)]
     pub struct Content {
         payload: RequestBody,
     }
@@ -335,6 +340,10 @@ mod request_builder {
                 .push(h3::Header::new(name.as_bytes(), value.as_bytes()));
             self
         }
+        pub fn add_header_mut(&mut self, name: &str, value: &str) {
+            self.headers
+                .push(h3::Header::new(name.as_bytes(), value.as_bytes()));
+        }
         pub fn add_header_option(mut self, header_option: Option<h3::Header>) -> Self {
             if let Some(hdr) = header_option {
                 self.headers.push(hdr);
@@ -376,18 +385,18 @@ mod request_builder {
     /// Request builder : call set_method, set_path, set_user_agent, and build.
     pub struct Http3RequestBuilder {
         method: Option<H3Method>,
-        path: Option<&'static str>,
-        scheme: Option<&'static str>,
+        path: Option<String>,
+        scheme: Option<String>,
         content_type: Option<String>,
         event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
-        user_agent: Option<&'static str>,
+        user_agent: Option<String>,
         authority: Option<SocketAddr>,
-        custom_headers: Option<Vec<(&'static str, &'static str)>>,
+        custom_headers: Option<Vec<(String, String)>>,
         uuid: Uuid,
     }
 
     impl Http3RequestBuilder {
-        pub fn post_data(&mut self, path: &'static str, data: Vec<u8>) -> &mut Self {
+        pub fn post_data(&mut self, path: String, data: Vec<u8>) -> &mut Self {
             self.post(path, RequestBody::new_data(data))
         }
         pub fn get_path(&self) -> Option<String> {
@@ -397,11 +406,7 @@ mod request_builder {
                 None
             }
         }
-        pub fn post_file(
-            &mut self,
-            req_path: &'static str,
-            file_path: impl AsRef<Path>,
-        ) -> &mut Self {
+        pub fn post_file(&mut self, req_path: String, file_path: impl AsRef<Path>) -> &mut Self {
             self.post(
                 req_path,
                 RequestBody::new_file_path(file_path.as_ref().to_path_buf()),
@@ -409,26 +414,32 @@ mod request_builder {
         }
         pub fn post_stream(
             &mut self,
-            req_path: &'static str,
+            req_path: String,
             stream: Box<dyn Read + Send + 'static>,
         ) -> &mut Self {
             self.post(req_path, RequestBody::new_stream(stream))
         }
-        fn post(&mut self, path: &'static str, payload: RequestBody) -> &mut Self {
+        fn post(&mut self, path: String, payload: RequestBody) -> &mut Self {
             self.method = Some(H3Method::POST { payload });
             self.path = Some(path);
             self
         }
-        pub fn get(&mut self, path: &'static str) -> &mut Self {
+        pub fn get(&mut self, path: String) -> &mut Self {
             self.method = Some(H3Method::GET);
             self.path = Some(path);
             self
         }
-        pub fn set_user_agent(&mut self, user_agent: &'static str) -> &mut Self {
+        pub fn delete(&mut self, req_path: String, auth_token: String) -> &mut Self {
+            self.method = Some(H3Method::DELETE);
+            self.path = Some(req_path);
+            self.set_header("Authorization".to_string(), auth_token);
+            self
+        }
+        pub fn set_user_agent(&mut self, user_agent: String) -> &mut Self {
             self.user_agent = Some(user_agent);
             self
         }
-        pub fn set_header(&mut self, name: &'static str, value: &'static str) -> &mut Self {
+        pub fn set_header(&mut self, name: String, value: String) -> &mut Self {
             if let None = self.custom_headers {
                 self.custom_headers = Some(vec![(name, value)]);
             } else {
@@ -457,7 +468,7 @@ mod request_builder {
             (),
         > {
             if self.method.is_none() || self.path.is_none() || self.authority.is_none() {
-                debug!("http3 request, nothing to build !");
+                info!("http3 request, nothing to build !");
                 return Err(());
             }
 
@@ -466,8 +477,8 @@ mod request_builder {
             let confirmation = Some(Http3RequestConfirm { response: receiver });
 
             let http_request_prep = match self.method.take().unwrap() {
-                H3Method::GET => vec![Http3RequestPrep::Header(
-                    HeaderRequest::new(true, sender)
+                H3Method::GET => {
+                    let mut hdr_req = HeaderRequest::new(true, sender)
                         .add_header(":method", "GET")
                         .add_header(":scheme", "https")
                         .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
@@ -475,12 +486,19 @@ mod request_builder {
                             ":authority",
                             self.authority.as_ref().unwrap().to_string().as_str(),
                         )
+                        /*
                         .add_header(
                             "user-agent",
                             self.user_agent.as_ref().unwrap().to_string().as_str(),
-                        )
-                        .add_header("accept", "*/*"),
-                )],
+                        )*/
+                        .add_header("accept", "*/*");
+                    if let Some(headers) = &self.custom_headers {
+                        for hdr in headers.iter() {
+                            hdr_req.add_header_mut(hdr.0.as_str(), hdr.1.as_str());
+                        }
+                    }
+                    vec![Http3RequestPrep::Header(hdr_req)]
+                }
                 H3Method::POST { mut payload } => {
                     if payload.len() == 0 {
                         error!("Payload must be > to 0 bytes");
@@ -493,30 +511,56 @@ mod request_builder {
                             content_type_set.as_bytes(),
                         ));
                     }
+
+                    let mut hdr_req = HeaderRequest::new(false, sender)
+                        .add_header(":method", "POST")
+                        .add_header(":scheme", "https")
+                        .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
+                        .add_header("content-length", payload.len().to_string().as_str())
+                        .add_header(
+                            ":authority",
+                            self.authority.as_ref().unwrap().to_string().as_str(),
+                        )
+                        .add_header_option(content_type)
+                        /*
+                        .add_header(
+                            "user-agent",
+                            self.user_agent.as_ref().unwrap().to_string().as_str(),
+                        )*/
+                        .add_header("accept", "*/*");
+                    if let Some(headers) = &self.custom_headers {
+                        for hdr in headers.iter() {
+                            hdr_req.add_header_mut(hdr.0.as_str(), hdr.1.as_str());
+                        }
+                    }
                     vec![
-                        Http3RequestPrep::Header(
-                            HeaderRequest::new(false, sender)
-                                .add_header(":method", "POST")
-                                .add_header(":scheme", "https")
-                                .add_header(
-                                    ":path",
-                                    self.path.as_ref().unwrap().to_string().as_str(),
-                                )
-                                .add_header("content-length", payload.len().to_string().as_str())
-                                .add_header(
-                                    ":authority",
-                                    self.authority.as_ref().unwrap().to_string().as_str(),
-                                )
-                                .add_header_option(content_type)
-                                .add_header(
-                                    "user-agent",
-                                    self.user_agent.as_ref().unwrap().to_string().as_str(),
-                                )
-                                .add_header("accept", "*/*"),
-                        ),
+                        Http3RequestPrep::Header(hdr_req),
                         //   header request
                         Http3RequestPrep::Body(Content::new(payload)),
                     ]
+                }
+                H3Method::DELETE => {
+                    let mut hrd_req = HeaderRequest::new(true, sender)
+                        .add_header(":method", "DELETE")
+                        .add_header(":scheme", "https")
+                        .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
+                        .add_header(
+                            ":authority",
+                            self.authority.as_ref().unwrap().to_string().as_str(),
+                        )
+                        /*
+                        .add_header(
+                            "user-agent",
+                            self.user_agent.as_ref().unwrap().to_string().as_str(),
+                        )*/
+                        .add_header("accept", "*/*");
+
+                    if let Some(headers) = &self.custom_headers {
+                        for hdr in headers.iter() {
+                            hrd_req.add_header_mut(hdr.0.as_str(), hdr.1.as_str());
+                        }
+                    }
+                    vec![Http3RequestPrep::Header(hrd_req)]
                 }
                 _ => vec![],
             };
@@ -536,7 +580,7 @@ mod request_format {
 
     use super::*;
     use quiche::h3;
-    #[derive(PartialEq)]
+    #[derive(Debug, PartialEq)]
     pub enum H3Method {
         GET,
         POST { payload: RequestBody },
