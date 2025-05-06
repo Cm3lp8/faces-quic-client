@@ -13,11 +13,25 @@
 [req: body =  stream_id []]
 ["%%%%%% A REQ %%%"]
 [ req = header [[
+    ":method: POST",
+    ":scheme: https",
+    ":path: /sync_db",
+    "content-length: 213",
+    ":authority: 192.168.1.22:3000",
+    "content-type: application/json",
+    "accept: */*",
+    "authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NDY2NDc3NTQsInN1YiI6Ik1hdGl0YXMifQ.3wdizF6VrKki6HQydlQ5ZPQieC8BBYzIZgGPHGereSk",
+]]]
+["sended succes [HeaderRequest { headers: [\":method: POST\", \":scheme: https\", \":path: /sync_db\", \"content-length: 213\", \":authority: 192.168.1.22:3000\", \"content-type: application/json\", \"accept: */*\", \"authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NDY2NDc3NTQsInN1YiI6Ik1hdGl0YXMifQ.3wdizF6VrKki6HQydlQ5ZPQieC8BBYzIZgGPHGereSk\"], stream_id_response: Sender { .. }, is_end: false }]"]
+["%%%%%% A REQ %%%"]
+[req: body =  stream_id []]
+["%%%%%% A REQ %%%"]
+[ req = header [[
     ":method: GET",
     ":scheme: https",
     ":path: /pull_conversations",
     ":authority: 192.168.1.22:3000",
     "accept: */*",
-    "authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NDY2MTMxNDUsInN1YiI6Ik1hdGl0YXMifQ.TOplBC_YZOYeuirEmzQ3uv3FyicESmHhcomlEP-R50w",
+    "authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NDY2NDc3NTQsInN1YiI6Ik1hdGl0YXMifQ.3wdizF6VrKki6HQydlQ5ZPQieC8BBYzIZgGPHGereSk",
 ]]]
-["sended succes [HeaderRequest { headers: [\":method: GET\", \":scheme: https\", \":path: /pull_conversations\", \":authority: 192.168.1.22:3000\", \"accept: */*\", \"authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NDY2MTMxNDUsInN1YiI6Ik1hdGl0YXMifQ.TOplBC_YZOYeuirEmzQ3uv3FyicESmHhcomlEP-R50w\"], stream_id_response: Sender { .. }, is_end: true }]"]
+["sended succes [HeaderRequest { headers: [\":method: GET\", \":scheme: https\", \":path: /pull_conversations\", \":authority: 192.168.1.22:3000\", \"accept: */*\", \"authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NDY2NDc3NTQsInN1YiI6Ik1hdGl0YXMifQ.3wdizF6VrKki6HQydlQ5ZPQieC8BBYzIZgGPHGereSk\"], stream_id_response: Sender { .. }, is_end: true }]"]

@@ -166,7 +166,9 @@ mod response_builder {
     use serde::{Deserialize, Serialize};
     use uuid::Uuid;
 
-    use crate::RequestEventListener;
+    use crate::{client_manager::persistant_stream::StreamSub, RequestEventListener};
+
+    use self::partial_response_impl::{handle_stream, respond_once};
 
     pub struct DownloadProgressStatus {
         req_path: String,
@@ -705,6 +707,7 @@ mod response_builder {
         connexion_id: String,
         request_uuid: Uuid,
         req_path: String,
+        streamable: Option<StreamSub>,
         event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
         headers: Option<Vec<h3::Header>>,
         content_length: Option<usize>,
@@ -743,6 +746,44 @@ mod response_builder {
                 stream_id: stream_ids.0,
                 connexion_id: stream_ids.1.to_owned(),
                 request_uuid,
+                streamable: None,
+                req_path: req_path.to_string(),
+                event_subscriber,
+                headers: None,
+                content_length: None,
+                packet_count: 0,
+                data: vec![],
+                response_channel: crossbeam::channel::bounded(1),
+                progress_channel: crossbeam::channel::bounded(1),
+            };
+            let response_receiver = partial_response.response_channel.1.clone();
+            let progress_receiver = partial_response.progress_channel.1.clone();
+            (partial_response, response_receiver, progress_receiver)
+        }
+        /// Create a new partial partial streamable response. It is a buffer type that keep track of the
+        /// progression of the response.
+        /// Create a UUid for this stream for event management purpose in the program that called
+        /// this request.
+        ///
+        /// # about streamable
+        ///
+        /// This response type indicates that program handles continuous connexion interactions.
+        pub fn new_streamable(
+            req_path: &str,
+            event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
+            stream_type: StreamSub,
+            stream_ids: &(u64, String),
+        ) -> (
+            Self,
+            crossbeam::channel::Receiver<CompletedResponse>,
+            crossbeam::channel::Receiver<UploadProgressStatus>,
+        ) {
+            let request_uuid = Uuid::new_v4();
+            let partial_response = Self {
+                stream_id: stream_ids.0,
+                connexion_id: stream_ids.1.to_owned(),
+                request_uuid,
+                streamable: Some(stream_type),
                 req_path: req_path.to_string(),
                 event_subscriber,
                 headers: None,
@@ -758,6 +799,9 @@ mod response_builder {
         }
         pub fn _set_content_length(&mut self, content_length: usize) {
             self.content_length = Some(content_length);
+        }
+        pub fn has_stream(&self) -> Option<&StreamSub> {
+            self.streamable.as_ref()
         }
         pub fn stream_id(&self) -> u64 {
             self.stream_id
@@ -870,8 +914,21 @@ mod response_builder {
                         )
                         .parse::<usize>()
                         .unwrap_or(0);
-                        let percentage_completed = self.data.len() / content_len;
 
+                        match &self.streamable {
+                            Some(stream_sub) => handle_stream(self, body, stream_sub),
+                            None => {
+                                respond_once(
+                                    self,
+                                    body,
+                                    status,
+                                    content_len,
+                                    &mut can_delete_in_table,
+                                );
+                            }
+                        }
+                    /*
+                        let percentage_completed = self.data.len() / content_len;
                         if body.packet.len() > 0 {
                             self.packet_count += 1;
                             self.data.extend_from_slice(body.packet());
@@ -928,6 +985,7 @@ mod response_builder {
                                 }
                             }
                         }
+                        */
                     } else {
                         if let BodyType::UploadProgressStatusBody(progress_status) =
                             body.body_type(self.req_path.as_str(), self.request_uuid)
@@ -944,6 +1002,90 @@ mod response_builder {
                 }
             }
             can_delete_in_table
+        }
+    }
+
+    mod partial_response_impl {
+        use std::sync::Arc;
+
+        use log::{debug, error};
+
+        use crate::client_manager::persistant_stream::{StreamControlFlow, StreamEvent, StreamSub};
+
+        use super::{CompletedResponse, Http3ResponseBody, PartialResponse, UploadProgressStatus};
+
+        pub fn handle_stream(
+            partial_response: &PartialResponse,
+            body: Http3ResponseBody,
+            stream_sub: &StreamSub,
+        ) {
+        }
+
+        pub fn respond_once(
+            partial_response: &mut PartialResponse,
+            body: Http3ResponseBody,
+            status: usize,
+            content_len: usize,
+            can_delete_in_table: &mut bool,
+        ) {
+            let percentage_completed = partial_response.data.len() / content_len;
+            if body.packet.len() > 0 {
+                partial_response.packet_count += 1;
+                partial_response.data.extend_from_slice(body.packet());
+            }
+            for sub in &partial_response.event_subscriber {
+                if let Err(e) = sub.on_download_progress(super::DownloadProgressStatus::new(
+                    partial_response.req_path.as_str(),
+                    partial_response.request_uuid,
+                    partial_response.data.len(),
+                    content_len,
+                    partial_response.data.len() as f32 / content_len as f32,
+                )) {
+                    error!("Failed to send Upload progress")
+                }
+            }
+
+            if body.is_end() {
+                if let Some(total_len) = partial_response.content_length {
+                    let percentage_completed =
+                        partial_response.data.len() as f32 / total_len as f32;
+
+                    for sub in &partial_response.event_subscriber {
+                        if let Err(e) = sub.on_upload_progress(UploadProgressStatus::new(
+                            partial_response.req_path.as_str(),
+                            partial_response.request_uuid,
+                            partial_response.data.len(),
+                            total_len,
+                            percentage_completed,
+                        )) {
+                            error!("Failed to send Upload progress")
+                        }
+                    }
+                }
+                if status != 100 {
+                    if let Err(e) =
+                        partial_response
+                            .response_channel
+                            .0
+                            .send(CompletedResponse::new(
+                                partial_response.stream_id,
+                                std::mem::replace(
+                                    partial_response.headers.as_mut().unwrap(),
+                                    Vec::with_capacity(1),
+                                ),
+                                std::mem::replace(&mut partial_response.data, vec![]),
+                            ))
+                    {
+                        debug!(
+                            "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
+                            body.stream_id(),
+                            e
+                        );
+                    } else {
+                        *can_delete_in_table = true;
+                    }
+                }
+            }
         }
     }
 }

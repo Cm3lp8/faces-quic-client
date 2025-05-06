@@ -14,7 +14,9 @@ mod client_request_mngr {
         client_config::ConnexionInfos,
         client_init::Http3Client,
         client_manager::{
-            persistant_stream::{KeepAlive, PingEmitter, StreamControlFlow, StreamEvent},
+            persistant_stream::{
+                KeepAlive, PingEmitter, StreamControlFlow, StreamEvent, StreamSub,
+            },
             request_manager::{Http3Request, Http3RequestBuilder, Http3RequestPrep, RequestHead},
             response_manager::{PartialResponse, ResponseManager, WaitPeerResponse},
             BodyHead, ResponseQueue,
@@ -81,7 +83,7 @@ mod client_request_mngr {
             &self,
             http3_request_builder: &mut Http3RequestBuilder,
             keep_alive: &Option<KeepAlive>,
-            stream_cb: impl Fn(StreamEvent, StreamControlFlow),
+            stream_cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static,
         ) -> Result<(), ()> {
             let path = http3_request_builder.get_path();
             match http3_request_builder.build_get_stream(keep_alive) {
@@ -143,6 +145,7 @@ mod client_request_mngr {
                     let response_manager_submission = self.response_manager.submitter();
                     let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
                     let response_sender = response_chan.0.clone();
+                    let stream_cb_syncable = Arc::new(stream_cb);
 
                     std::thread::spawn(move || {
                         /*
@@ -152,9 +155,10 @@ mod client_request_mngr {
                          * */
                         if let Ok(stream_ids) = stream_ids {
                             let (partial_response, completed_channel, progress_channel) =
-                                PartialResponse::new(
+                                PartialResponse::new_streamable(
                                     path.unwrap().as_str(),
                                     event_subscriber,
+                                    StreamSub::Downstream(stream_cb_syncable),
                                     &stream_ids,
                                 );
 

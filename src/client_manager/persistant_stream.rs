@@ -1,4 +1,4 @@
-pub use event_stream_types::{KeepAlive, StreamControlFlow, StreamEvent};
+pub use event_stream_types::{KeepAlive, StreamControlFlow, StreamEvent, StreamSub};
 pub use ping_emission::PingEmitter;
 pub use stream_builder::StreamBuilder;
 mod ping_emission {
@@ -36,7 +36,13 @@ mod ping_emission {
 }
 
 mod event_stream_types {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
+
+    pub enum StreamSub {
+        UpStream(Arc<dyn Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static>),
+        Downstream(Arc<dyn Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static>),
+        //Bidi,
+    }
 
     pub struct StreamEvent;
     pub struct StreamControlFlow;
@@ -97,11 +103,12 @@ mod stream_builder {
             self
         }
 
-        pub fn open(&self, cb: impl Fn(StreamEvent, StreamControlFlow)) {
+        pub fn open(&self, cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static) {
             let uuid = self.uuid;
 
             if let Some(entry) = self.request_builder.lock().unwrap().get_mut(&uuid) {
-                self.request_manager
+                let _ = self
+                    .request_manager
                     .request_manager_ref()
                     .new_stream_with_builder(entry, &self.keep_alive, cb);
             };
