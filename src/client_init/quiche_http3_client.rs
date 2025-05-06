@@ -300,6 +300,7 @@ pub fn run(
                             }
                         }
                         Http3Request::Ping(stream_id) => {
+                            my_log::debug(format!("wandt send ping stream [{}] ", stream_id));
                             if !conn.stream_writable(stream_id, 1).unwrap() {
                                 pending_bodies.entry(stream_id).or_default().push((
                                     vec![0x00],
@@ -316,7 +317,7 @@ pub fn run(
                                         h3_byte_written += v;
                                         if v < 1 {
                                             lost += payload.len() - v;
-                                            debug!("lost total [{}]", lost);
+                                            my_log::debug(format!("succes total [{}]", stream_id));
                                             pending_bodies.entry(stream_id).or_default().push((
                                                 payload[v..].to_vec(),
                                                 adjust_send_timer,
@@ -332,10 +333,10 @@ pub fn run(
                                         error!("StreamBlocked !!")
                                     }
                                     Err(e) => {
-                                        error!(
+                                        my_log::debug(format!(
                                             "Error : Failed to send ping stream [{}] {:?}",
                                             stream_id, e
-                                        );
+                                        ));
                                     }
                                 }
                             }

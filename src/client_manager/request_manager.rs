@@ -3,6 +3,7 @@ mod request_body;
 pub use event_listener::{ProgressTracker, RequestEvent, RequestEventListener};
 pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
 pub use request_body::ContentType;
+pub use request_body::RequestBody;
 pub use request_builder::{
     Http3Request, Http3RequestBuilder, Http3RequestConfirm, Http3RequestPrep,
 };
@@ -100,12 +101,87 @@ mod queue_builder {
                 );
             });
         }
-        pub fn send_ping(&self, stream_id: u64) {
+        ///
+        ///Here we split the given body if necessary : Send body in chunks. Open a thread that read the buffer in loop, sending chunk by chunk
+        ///the body with the stream_id.
+        ///
+        ///# the bodies ending
+        ///
+        ///The bodies send by this fonction cant terminate a connection since it's a streaming
+        ///context. is_end == always false.
+        ///
+        pub fn send_body_while_streaming(
+            &self,
+            stream_id: u64,
+            chunk_size: usize,
+            mut body: RequestBody,
+        ) {
+            let body_sender = self.head.clone();
+            std::thread::spawn(move || {
+                let mut body = body;
+                let body_total_len = body.len();
+                let mut byte_send = 0;
+                let mut packet_send = 0;
+
+                let number_of_packet = body.len() / chunk_size + {
+                    if body.len() % chunk_size == 0 {
+                        0
+                    } else {
+                        1
+                    }
+                };
+
+                let mut packet_count = 0;
+                let send_duration = Instant::now();
+                let mut sending_duration = Duration::from_micros(13);
+                let mut last_send = Instant::now();
+                let mut read_buffer = &mut vec![0; chunk_size].into_boxed_slice();
+
+                while let Ok(n) = body.read(&mut read_buffer) {
+                    let now = Instant::now();
+
+                    // std::thread::sleep(sending_duration);
+                    let adjust_duration = crossbeam::channel::bounded::<Instant>(1);
+
+                    let end = n + byte_send;
+                    let data = read_buffer[..n].to_vec();
+
+                    let body_request = Http3Request::Body(BodyRequest::new(
+                        stream_id,
+                        packet_count as usize,
+                        data,
+                        false, //always false here (streaming context)
+                    ));
+
+                    if let Err(e) = body_sender.send((body_request, adjust_duration.0)) {
+                        debug!("Error : failed sending body packet on stream [{stream_id}] packet send [{packet_send}]");
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_micros(150));
+                    byte_send += n;
+                    packet_count += 1;
+                    last_send = Instant::now();
+                    if byte_send == body_total_len {
+                        break;
+                    }
+                }
+                debug!(
+                    "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
+                    byte_send, packet_count, send_duration.elapsed()
+                );
+            });
+        }
+        pub fn send_ping(
+            &self,
+            stream_id: u64,
+        ) -> Result<
+            (),
+            crossbeam::channel::SendError<(Http3Request, crossbeam::channel::Sender<Instant>)>,
+        > {
             let body_sender = self.head.clone();
             let adjust_duration = crossbeam::channel::bounded::<Instant>(1);
-            if let Err(e) = body_sender.send((Http3Request::Ping(stream_id), adjust_duration.0)) {
-                debug!("Error : failed sending body packet on stream [{stream_id}]");
-            }
+
+            body_sender.send((Http3Request::Ping(stream_id), adjust_duration.0))
         }
     }
 
@@ -175,7 +251,7 @@ mod request_builder {
     use ring::error;
     use uuid::Uuid;
 
-    use crate::client_manager::persistant_stream::KeepAlive;
+    use crate::{client_manager::persistant_stream::KeepAlive, my_log};
 
     use self::{
         event_listener::RequestEventListener, request_body::RequestBody, request_format::H3Method,
@@ -439,8 +515,8 @@ mod request_builder {
             self.path = Some(path);
             self
         }
-        pub fn get_stream(&mut self, path: String) -> &mut Self {
-            self.method = Some(H3Method::GET);
+        pub fn down_stream(&mut self, path: String, payload: RequestBody) -> &mut Self {
+            self.method = Some(H3Method::POST { payload });
             self.path = Some(path);
             self
         }
@@ -477,7 +553,7 @@ mod request_builder {
         ) {
             self.event_subscriber.push(event_listener.clone());
         }
-        pub fn build_get_stream(
+        pub fn build_down_stream(
             &mut self,
             keep_alive: &Option<KeepAlive>,
         ) -> Result<
@@ -496,6 +572,8 @@ mod request_builder {
             let event_subscriber = std::mem::replace(&mut self.event_subscriber, vec![]);
             let (sender, receiver) = crossbeam::channel::bounded::<(u64, String)>(1);
             let confirmation = Some(Http3RequestConfirm { response: receiver });
+
+            my_log::debug("building en cours");
 
             let http_request_prep = match self.method.take().unwrap() {
                 H3Method::GET => {
@@ -519,16 +597,14 @@ mod request_builder {
                         }
                     }
                     let mut res = vec![Http3RequestPrep::Header(hdr_req)];
-                    if let Some(ping_frequency) = keep_alive {
-                        res.push(Http3RequestPrep::Ping(ping_frequency.duration()))
-                    }
                     res
                 }
                 H3Method::POST { mut payload } => {
+                    /*
                     if payload.len() == 0 {
                         error!("Payload must be > to 0 bytes");
                         return Err(());
-                    }
+                    }*/
                     let mut content_type: Option<h3::Header> = None;
                     if let Some(content_type_set) = &self.content_type {
                         content_type = Some(h3::Header::new(
@@ -558,11 +634,15 @@ mod request_builder {
                             hdr_req.add_header_mut(hdr.0.as_str(), hdr.1.as_str());
                         }
                     }
-                    vec![
+                    let mut res = vec![
                         Http3RequestPrep::Header(hdr_req),
                         //   header request
                         Http3RequestPrep::Body(Content::new(payload)),
-                    ]
+                    ];
+                    if let Some(ping_frequency) = keep_alive {
+                        res.push(Http3RequestPrep::Ping(ping_frequency.duration()))
+                    }
+                    res
                 }
                 H3Method::DELETE => {
                     let mut hrd_req = HeaderRequest::new(true, sender)

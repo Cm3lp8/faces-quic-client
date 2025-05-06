@@ -122,14 +122,19 @@ mod client_management {
         pub fn request_manager_ref(&self) -> &ClientRequestManager {
             &self.request_manager
         }
-        pub fn get_stream(&self, path: &str) -> ReqBuilderOutput {
+        pub fn down_stream(&self, path: &str) -> ReqBuilderOutput {
+            my_log::debug("get_ stream req");
             let reqbuild_uuid = uuid::Uuid::new_v4();
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
                 reqbuild_uuid,
             );
 
-            http3_request_builder.get_stream(path.to_owned());
+            http3_request_builder.down_stream(
+                path.to_owned(),
+                request_manager::RequestBody::new_data(b"down_stream".to_vec()),
+            );
+            my_log::debug("builded down stream");
 
             self.request_builder
                 .lock()
@@ -264,6 +269,7 @@ mod client_management {
         }
         pub fn stream(&self) -> StreamBuilder {
             let uuid = self.0;
+            my_log::debug("build STREAM BUILDER");
             StreamBuilder::with_request_map(uuid, self.1.request_builder.clone(), self.1)
         }
         pub fn header(&self, name: &str, value: &str) -> &Self {

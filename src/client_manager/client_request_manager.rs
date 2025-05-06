@@ -21,6 +21,7 @@ mod client_request_mngr {
             response_manager::{PartialResponse, ResponseManager, WaitPeerResponse},
             BodyHead, ResponseQueue,
         },
+        my_log,
     };
 
     ///
@@ -86,7 +87,7 @@ mod client_request_mngr {
             stream_cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static,
         ) -> Result<(), ()> {
             let path = http3_request_builder.get_path();
-            match http3_request_builder.build_get_stream(keep_alive) {
+            match http3_request_builder.build_down_stream(keep_alive) {
                 Ok((http3_request, event_subscriber, http3_confirm)) => {
                     /*
                      *
@@ -98,6 +99,8 @@ mod client_request_mngr {
                             *self.waker.lock().unwrap() = Some(waker);
                         }
                     }
+
+                    my_log::debug("ici connexion ping");
 
                     // sending first header, waiting for a stream id
                     for req in &http3_request {
@@ -125,22 +128,31 @@ mod client_request_mngr {
                     for req in &http3_request {
                         match req {
                             Http3RequestPrep::Ping(duration) => {
-                                let ping_stop =
-                                    PingEmitter::run(*duration, &self.request_head, stream_id);
+                                my_log::debug("send pinggggg");
+                                let ping_stop = PingEmitter::run(
+                                    *duration,
+                                    &self.request_head,
+                                    stream_id,
+                                    &self.waker,
+                                );
                             }
 
                             _ => {}
                         }
                     }
+                    /*
                     for req in http3_request {
                         match req {
                             Http3RequestPrep::Body(body_req) => {
-                                self.request_head
-                                    .send_body(stream_id, 8192, body_req.take());
+                                self.request_head.send_body_while_streaming(
+                                    stream_id,
+                                    8192,
+                                    body_req.take(),
+                                );
                             }
                             _ => {}
                         }
-                    }
+                    }*/
 
                     let response_manager_submission = self.response_manager.submitter();
                     let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);

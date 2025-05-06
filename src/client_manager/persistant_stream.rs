@@ -2,9 +2,14 @@ pub use event_stream_types::{KeepAlive, StreamControlFlow, StreamEvent, StreamSu
 pub use ping_emission::PingEmitter;
 pub use stream_builder::StreamBuilder;
 mod ping_emission {
-    use std::time::Duration;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
-    use crate::client_manager::request_manager::RequestHead;
+    use mio::Waker;
+
+    use crate::{client_manager::request_manager::RequestHead, my_log};
 
     pub struct PingEmissionControl {
         sender: crossbeam::channel::Sender<()>,
@@ -17,16 +22,25 @@ mod ping_emission {
             ping_freq: Duration,
             request_sender: &RequestHead,
             stream_id: u64,
+            waker: &Arc<Mutex<Option<Waker>>>,
         ) -> PingEmissionControl {
             let (sender, receiver) = crossbeam::channel::bounded(1);
 
             let request_sender = request_sender.clone();
+            let waker = waker.clone();
 
             std::thread::spawn(move || {
                 while let Err(_) = receiver.try_recv() {
                     std::thread::sleep(ping_freq);
 
-                    request_sender.send_ping(stream_id);
+                    if let Err(e) = request_sender.send_ping(stream_id) {
+                        my_log::debug(e);
+                    } else {
+                        my_log::debug("send ok");
+                        if let Some(waker) = &*waker.lock().unwrap() {
+                            let _ = waker.wake();
+                        };
+                    }
                 }
             });
 
