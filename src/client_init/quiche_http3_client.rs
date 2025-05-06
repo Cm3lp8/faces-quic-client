@@ -299,6 +299,47 @@ pub fn run(
                                 }
                             }
                         }
+                        Http3Request::Ping(stream_id) => {
+                            if !conn.stream_writable(stream_id, 1).unwrap() {
+                                pending_bodies.entry(stream_id).or_default().push((
+                                    vec![0x00],
+                                    adjust_send_timer,
+                                    false,
+                                ));
+                                pending_count += 1;
+                            //      continue 'main;
+                            } else {
+                                let payload = vec![0x00];
+                                match h3_conn.send_body(&mut conn, stream_id, &payload, false) {
+                                    Ok(v) => {
+                                        bodies_send += 1;
+                                        h3_byte_written += v;
+                                        if v < 1 {
+                                            lost += payload.len() - v;
+                                            debug!("lost total [{}]", lost);
+                                            pending_bodies.entry(stream_id).or_default().push((
+                                                payload[v..].to_vec(),
+                                                adjust_send_timer,
+                                                false,
+                                            ));
+                                            pending_count += 1;
+                                            continue 'main;
+                                        }
+                                        if let Ok(_) = adjust_send_timer.send(Instant::now()) {};
+                                        let _ = waker_1.wake();
+                                    }
+                                    Err(quiche::h3::Error::StreamBlocked) => {
+                                        error!("StreamBlocked !!")
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Error : Failed to send ping stream [{}] {:?}",
+                                            stream_id, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         Http3Request::Body(mut body_req) => {
                             if !conn.stream_writable(body_req.stream_id(), 512).unwrap() {
                                 pending_bodies

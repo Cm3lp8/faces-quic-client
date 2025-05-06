@@ -1,5 +1,6 @@
 mod body_manager;
 mod client_request_manager;
+mod persistant_stream;
 mod request_manager;
 mod response_manager;
 pub use body_manager::{BodyChannel, BodyHead, BodyQueue};
@@ -36,6 +37,7 @@ mod client_management {
     };
 
     use self::{
+        persistant_stream::{StreamBuilder, StreamEvent},
         request_manager::{Http3RequestBuilder, Http3RequestPrep},
         response_manager::WaitPeerResponse,
     };
@@ -115,6 +117,26 @@ mod client_management {
 
         pub fn builder() -> () {
             ()
+        }
+
+        pub fn request_manager_ref(&self) -> &ClientRequestManager {
+            &self.request_manager
+        }
+        pub fn get_stream(&self, path: &str) -> ReqBuilderOutput {
+            let reqbuild_uuid = uuid::Uuid::new_v4();
+            let mut http3_request_builder = Http3RequestPrep::new(
+                self.connexion_infos.get_peer_socket_address(),
+                reqbuild_uuid,
+            );
+
+            http3_request_builder.get_stream(path.to_owned());
+
+            self.request_builder
+                .lock()
+                .unwrap()
+                .entry(reqbuild_uuid)
+                .insert_entry(http3_request_builder);
+            ReqBuilderOutput(reqbuild_uuid, self)
         }
 
         pub fn get(&self, path: &str) -> ReqBuilderOutput {
@@ -239,6 +261,10 @@ mod client_management {
                 return self.1.request_manager.new_request_with_builder(entry);
             }
             Err(())
+        }
+        pub fn stream(&self) -> StreamBuilder {
+            let uuid = self.0;
+            StreamBuilder::with_request_map(uuid, self.1.request_builder.clone(), self.1)
         }
         pub fn header(&self, name: &str, value: &str) -> &Self {
             let uuid = self.0;

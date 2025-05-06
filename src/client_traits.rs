@@ -23,6 +23,18 @@ mod body_interfaces {
         }
     }
 
+    impl<T> IntoBodyReq for Vec<T>
+    where
+        T: Serialize + Json,
+    {
+        fn into_bytes(self) -> Vec<u8> {
+            serde_json::to_vec(&self).unwrap()
+        }
+        fn content_type(&self) -> ContentType {
+            ContentType::Json
+        }
+    }
+
     impl<T> IntoBodyReq for T
     where
         T: Serialize + Json,

@@ -14,6 +14,7 @@ mod client_request_mngr {
         client_config::ConnexionInfos,
         client_init::Http3Client,
         client_manager::{
+            persistant_stream::{KeepAlive, PingEmitter, StreamControlFlow, StreamEvent},
             request_manager::{Http3Request, Http3RequestBuilder, Http3RequestPrep, RequestHead},
             response_manager::{PartialResponse, ResponseManager, WaitPeerResponse},
             BodyHead, ResponseQueue,
@@ -75,6 +76,122 @@ mod client_request_mngr {
                     println!("Error : failed waking up the client [{:?}]", e);
                 }
             }
+        }
+        pub fn new_stream_with_builder(
+            &self,
+            http3_request_builder: &mut Http3RequestBuilder,
+            keep_alive: &Option<KeepAlive>,
+            stream_cb: impl Fn(StreamEvent, StreamControlFlow),
+        ) -> Result<(), ()> {
+            let path = http3_request_builder.get_path();
+            match http3_request_builder.build_get_stream(keep_alive) {
+                Ok((http3_request, event_subscriber, http3_confirm)) => {
+                    /*
+                     *
+                     * if connexion is closed, open it :
+                     *
+                     * */
+                    if self.http3_client.is_off() {
+                        if let Ok((_conn_id, waker)) = self.http3_client.connect() {
+                            *self.waker.lock().unwrap() = Some(waker);
+                        }
+                    }
+
+                    // sending first header, waiting for a stream id
+                    for req in &http3_request {
+                        match req {
+                            Http3RequestPrep::Header(header_req) => {
+                                let adjust_sending_duration =
+                                    crossbeam::channel::bounded::<Instant>(1);
+                                if let Err(e) = self.request_head.send_request((
+                                    Http3Request::Header(header_req.clone()),
+                                    adjust_sending_duration.0,
+                                )) {
+                                    println!("Error sending header request [{:?}]", e)
+                                } else {
+                                    self.wake_client();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Once the stream has been created, we received it back from client quiche
+                    // loop;
+                    let stream_ids = http3_confirm.unwrap().wait_stream_ids();
+                    let stream_id = stream_ids.as_ref().unwrap().0;
+
+                    for req in &http3_request {
+                        match req {
+                            Http3RequestPrep::Ping(duration) => {
+                                let ping_stop =
+                                    PingEmitter::run(*duration, &self.request_head, stream_id);
+                            }
+
+                            _ => {}
+                        }
+                    }
+                    for req in http3_request {
+                        match req {
+                            Http3RequestPrep::Body(body_req) => {
+                                self.request_head
+                                    .send_body(stream_id, 8192, body_req.take());
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let response_manager_submission = self.response_manager.submitter();
+                    let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
+                    let response_sender = response_chan.0.clone();
+
+                    std::thread::spawn(move || {
+                        /*
+                         *
+                         * wait here the stream_id with the response confirm
+                         *
+                         * */
+                        if let Ok(stream_ids) = stream_ids {
+                            let (partial_response, completed_channel, progress_channel) =
+                                PartialResponse::new(
+                                    path.unwrap().as_str(),
+                                    event_subscriber,
+                                    &stream_ids,
+                                );
+
+                            let peer_response = WaitPeerResponse::new(
+                                &stream_ids,
+                                completed_channel,
+                                progress_channel,
+                            );
+                            if let Err(e) = response_sender.send(peer_response) {
+                                println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
+                            }
+
+                            //send partial response to the reponse manager
+                            if let Err(e) = response_manager_submission.submit(partial_response) {
+                                println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
+                            }
+                        }
+
+                        /*
+                         *
+                         *
+                         * Get the response back -> ask the response table in the response worker
+                         * with the stream_id that is unique per connexion
+                         *
+                         *
+                         * */
+                    });
+
+                    if let Ok(response) = response_chan.1.recv() {
+                        ()
+                    } else {
+                        ()
+                    }
+                }
+                Err(()) => (),
+            }
+            Ok(())
         }
         pub fn new_request_with_builder(
             &self,
