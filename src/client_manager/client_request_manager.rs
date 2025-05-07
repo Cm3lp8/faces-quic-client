@@ -128,7 +128,6 @@ mod client_request_mngr {
                     for req in &http3_request {
                         match req {
                             Http3RequestPrep::Ping(duration) => {
-                                my_log::debug("send pinggggg");
                                 let ping_stop = PingEmitter::run(
                                     *duration,
                                     &self.request_head,

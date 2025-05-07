@@ -168,7 +168,7 @@ mod response_builder {
 
     use crate::{client_manager::persistant_stream::StreamSub, RequestEventListener};
 
-    use self::partial_response_impl::{handle_stream, respond_once};
+    use self::partial_response_impl::{handle_down_stream, respond_once};
 
     pub struct DownloadProgressStatus {
         req_path: String,
@@ -916,7 +916,7 @@ mod response_builder {
                         .unwrap_or(0);
 
                         match &self.streamable {
-                            Some(stream_sub) => handle_stream(self, body, stream_sub),
+                            Some(stream_sub) => handle_down_stream(self, body, stream_sub),
                             None => {
                                 respond_once(
                                     self,
@@ -927,65 +927,6 @@ mod response_builder {
                                 );
                             }
                         }
-                    /*
-                        let percentage_completed = self.data.len() / content_len;
-                        if body.packet.len() > 0 {
-                            self.packet_count += 1;
-                            self.data.extend_from_slice(body.packet());
-                        }
-                        for sub in &self.event_subscriber {
-                            if let Err(e) = sub.on_download_progress(DownloadProgressStatus::new(
-                                self.req_path.as_str(),
-                                self.request_uuid,
-                                self.data.len(),
-                                content_len,
-                                self.data.len() as f32 / content_len as f32,
-                            )) {
-                                error!("Failed to send Upload progress")
-                            }
-                        }
-
-                        if body.is_end() {
-                            if let Some(total_len) = self.content_length {
-                                let percentage_completed =
-                                    self.data.len() as f32 / total_len as f32;
-
-                                for sub in &self.event_subscriber {
-                                    if let Err(e) =
-                                        sub.on_upload_progress(UploadProgressStatus::new(
-                                            self.req_path.as_str(),
-                                            self.request_uuid,
-                                            self.data.len(),
-                                            total_len,
-                                            percentage_completed,
-                                        ))
-                                    {
-                                        error!("Failed to send Upload progress")
-                                    }
-                                }
-                            }
-                            if status != 100 {
-                                if let Err(e) =
-                                    self.response_channel.0.send(CompletedResponse::new(
-                                        self.stream_id,
-                                        std::mem::replace(
-                                            self.headers.as_mut().unwrap(),
-                                            Vec::with_capacity(1),
-                                        ),
-                                        std::mem::replace(&mut self.data, vec![]),
-                                    ))
-                                {
-                                    debug!(
-                        "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
-                        body.stream_id(),
-                        e
-                    );
-                                } else {
-                                    can_delete_in_table = true;
-                                }
-                            }
-                        }
-                        */
                     } else {
                         if let BodyType::UploadProgressStatusBody(progress_status) =
                             body.body_type(self.req_path.as_str(), self.request_uuid)
@@ -1014,12 +955,23 @@ mod response_builder {
 
         use super::{CompletedResponse, Http3ResponseBody, PartialResponse, UploadProgressStatus};
 
-        pub fn handle_stream(
+        pub fn handle_down_stream(
             partial_response: &PartialResponse,
             body: Http3ResponseBody,
             stream_sub: &StreamSub,
         ) {
-            //
+            let stream_event = StreamEvent::new(
+                partial_response.req_path.clone(),
+                partial_response.stream_id,
+                if let Some(hdrs) = partial_response.headers.clone() {
+                    hdrs
+                } else {
+                    vec![]
+                },
+                body.packet,
+            );
+
+            stream_sub.callback(stream_event, StreamControlFlow);
         }
 
         pub fn respond_once(

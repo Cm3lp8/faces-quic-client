@@ -52,13 +52,47 @@ mod ping_emission {
 mod event_stream_types {
     use std::{sync::Arc, time::Duration};
 
+    use quiche::h3;
+
     pub enum StreamSub {
         UpStream(Arc<dyn Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static>),
         Downstream(Arc<dyn Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static>),
         //Bidi,
     }
+    impl StreamSub {
+        pub fn callback(&self, stream_event: StreamEvent, control_flow: StreamControlFlow) {
+            match self {
+                Self::Downstream(cb) => (*cb)(stream_event, control_flow),
+                _ => {}
+            }
+        }
+    }
 
-    pub struct StreamEvent;
+    pub struct StreamEvent {
+        req_path: String,
+        stream_id: u64,
+        headers: Vec<h3::Header>,
+        body: Vec<u8>,
+    }
+
+    impl StreamEvent {
+        pub fn new(
+            req_path: String,
+            stream_id: u64,
+            headers: Vec<h3::Header>,
+            body: Vec<u8>,
+        ) -> Self {
+            Self {
+                req_path,
+                stream_id,
+                headers,
+                body,
+            }
+        }
+        pub fn body_as_slice(&self) -> &[u8] {
+            &self.body
+        }
+    }
     pub struct StreamControlFlow;
 
     pub struct KeepAlive {
