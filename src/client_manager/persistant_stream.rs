@@ -9,7 +9,10 @@ mod ping_emission {
 
     use mio::Waker;
 
-    use crate::{client_manager::request_manager::RequestHead, my_log};
+    use crate::{
+        client_manager::request_manager::{PingStatus, RequestHead},
+        my_log,
+    };
 
     pub struct PingEmissionControl {
         sender: crossbeam::channel::Sender<()>,
@@ -33,10 +36,11 @@ mod ping_emission {
                 while let Err(_) = receiver.try_recv() {
                     std::thread::sleep(ping_freq);
 
-                    if let Err(e) = request_sender.send_ping(stream_id) {
+                    let ping_status = PingStatus::default();
+
+                    if let Err(e) = request_sender.send_ping(ping_status) {
                         my_log::debug(e);
                     } else {
-                        my_log::debug("send ok");
                         if let Some(waker) = &*waker.lock().unwrap() {
                             let _ = waker.wake();
                         };
@@ -54,10 +58,11 @@ mod event_stream_types {
 
     use quiche::h3;
 
+    #[derive(Clone)]
     pub enum StreamSub {
         UpStream(Arc<dyn Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static>),
         Downstream(Arc<dyn Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static>),
-        //Bidi,
+        None, //Bidi,
     }
     impl StreamSub {
         pub fn callback(&self, stream_event: StreamEvent, control_flow: StreamControlFlow) {
@@ -92,6 +97,9 @@ mod event_stream_types {
         pub fn body_as_slice(&self) -> &[u8] {
             &self.body
         }
+        pub fn stream_id(&self) -> u64 {
+            self.stream_id
+        }
     }
     pub struct StreamControlFlow;
 
@@ -120,7 +128,7 @@ mod stream_builder {
 
     use crate::{
         client_manager::request_manager::{self, Http3RequestBuilder},
-        Http3ClientManager,
+        my_log, Http3ClientManager,
     };
 
     use super::{event_stream_types::KeepAlive, StreamControlFlow, StreamEvent};
@@ -154,11 +162,21 @@ mod stream_builder {
         pub fn open(&self, cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static) {
             let uuid = self.uuid;
 
+            my_log::log("Stream_opening");
+
             if let Some(entry) = self.request_builder.lock().unwrap().get_mut(&uuid) {
-                let _ = self
+                let wait_response = self
                     .request_manager
                     .request_manager_ref()
                     .new_stream_with_builder(entry, &self.keep_alive, cb);
+
+                std::thread::spawn(move || {
+                    if let Ok(response) = wait_response {
+                        if let Ok(res) = response.wait_response() {
+                            my_log::debug(String::from_utf8(res.status_code().unwrap().to_vec()));
+                        }
+                    }
+                });
             };
         }
     }

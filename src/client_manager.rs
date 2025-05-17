@@ -122,19 +122,14 @@ mod client_management {
         pub fn request_manager_ref(&self) -> &ClientRequestManager {
             &self.request_manager
         }
-        pub fn down_stream(&self, path: &str) -> ReqBuilderOutput {
-            my_log::debug("get_ stream req");
+        pub fn down_stream(&self, path: &str, data: impl IntoBodyReq) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
                 reqbuild_uuid,
             );
 
-            http3_request_builder.down_stream(
-                path.to_owned(),
-                request_manager::RequestBody::new_data(b"down_stream".to_vec()),
-            );
-            my_log::debug("builded down stream");
+            http3_request_builder.down_stream(path.to_owned(), data.into_bytes());
 
             self.request_builder
                 .lock()
@@ -167,16 +162,19 @@ mod client_management {
                 reqbuild_uuid,
             );
             let content_type = data.content_type();
+            my_log::debug("## HERE POST DATA ");
             http3_request_builder
                 .post_data(path.to_string(), data.into_bytes())
                 .set_content_type(content_type);
 
+            my_log::debug("## HERE POST DATA DONE ");
             self.request_builder
                 .lock()
                 .unwrap()
                 .entry(reqbuild_uuid)
                 .insert_entry(http3_request_builder);
 
+            my_log::debug("## HERE POST DATA DONE  & INSERTED");
             ReqBuilderOutput(reqbuild_uuid, self)
         }
         pub fn post_file(&self, path: String, file_path: impl AsRef<Path>) -> ReqBuilderOutput {
@@ -263,6 +261,7 @@ mod client_management {
             let uuid = self.0;
 
             if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
+                my_log::debug("## HERE POST DATA locked ");
                 return self.1.request_manager.new_request_with_builder(entry);
             }
             Err(())

@@ -85,8 +85,9 @@ mod client_request_mngr {
             http3_request_builder: &mut Http3RequestBuilder,
             keep_alive: &Option<KeepAlive>,
             stream_cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static,
-        ) -> Result<(), ()> {
+        ) -> Result<WaitPeerResponse, ()> {
             let path = http3_request_builder.get_path();
+            my_log::debug("ici connexion ping");
             match http3_request_builder.build_down_stream(keep_alive) {
                 Ok((http3_request, event_subscriber, http3_confirm)) => {
                     /*
@@ -99,8 +100,6 @@ mod client_request_mngr {
                             *self.waker.lock().unwrap() = Some(waker);
                         }
                     }
-
-                    my_log::debug("ici connexion ping");
 
                     // sending first header, waiting for a stream id
                     for req in &http3_request {
@@ -139,19 +138,16 @@ mod client_request_mngr {
                             _ => {}
                         }
                     }
-                    /*
                     for req in http3_request {
                         match req {
                             Http3RequestPrep::Body(body_req) => {
-                                self.request_head.send_body_while_streaming(
-                                    stream_id,
-                                    8192,
-                                    body_req.take(),
-                                );
+                                my_log::debug(&body_req);
+                                self.request_head
+                                    .send_body(stream_id, 8192, body_req.take());
                             }
-                            _ => {}
+                            _ => my_log::log("no body"),
                         }
-                    }*/
+                    }
 
                     let response_manager_submission = self.response_manager.submitter();
                     let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
@@ -199,14 +195,13 @@ mod client_request_mngr {
                     });
 
                     if let Ok(response) = response_chan.1.recv() {
-                        ()
+                        Ok(response)
                     } else {
-                        ()
+                        Err(())
                     }
                 }
-                Err(()) => (),
+                Err(()) => Err(()),
             }
-            Ok(())
         }
         pub fn new_request_with_builder(
             &self,
@@ -249,10 +244,11 @@ mod client_request_mngr {
                     for req in http3_request {
                         match req {
                             Http3RequestPrep::Body(body_req) => {
+                                my_log::debug(&body_req);
                                 self.request_head
                                     .send_body(stream_id, 8192, body_req.take());
                             }
-                            _ => {}
+                            _ => my_log::log("no body"),
                         }
                     }
 

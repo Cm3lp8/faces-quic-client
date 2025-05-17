@@ -204,6 +204,7 @@ pub fn run(
                         while let Ok(read) = http3_conn.recv_body(&mut conn, stream_id, &mut buf) {
                             bytes_re += read;
                             let _ = waker_1.wake();
+
                             if let Err(e) =
                                 response_queue.send_response(Http3Response::new_body_data(
                                     stream_id,
@@ -290,55 +291,19 @@ pub fn run(
                             ) {
                                 req_start = std::time::Instant::now();
                                 let _ = waker_1.wake();
-                                my_log::debug(format!("sended succes [{:?}]", header_req));
+
                                 if let Err(e) = header_req.send_ids(stream_id, trace_id.as_str()) {
-                                    debug!(
-                                        "Error : Failed to send header request [{stream_id}], {:?}",
-                                        e
-                                    );
+                                    error!("failed to send back stream ids")
                                 }
+                                my_log::debug(format!("sended succes [{:?}]", header_req));
                             }
                         }
-                        Http3Request::Ping(stream_id) => {
-                            my_log::debug(format!("wandt send ping stream [{}] ", stream_id));
-                            if !conn.stream_writable(stream_id, 1).unwrap() {
-                                pending_bodies.entry(stream_id).or_default().push((
-                                    vec![0x00],
-                                    adjust_send_timer,
-                                    false,
-                                ));
-                                pending_count += 1;
-                            //      continue 'main;
-                            } else {
-                                let payload = vec![0x00];
-                                match h3_conn.send_body(&mut conn, stream_id, &payload, false) {
-                                    Ok(v) => {
-                                        bodies_send += 1;
-                                        h3_byte_written += v;
-                                        if v < 1 {
-                                            lost += payload.len() - v;
-                                            my_log::debug(format!("succes total [{}]", stream_id));
-                                            pending_bodies.entry(stream_id).or_default().push((
-                                                payload[v..].to_vec(),
-                                                adjust_send_timer,
-                                                false,
-                                            ));
-                                            pending_count += 1;
-                                            continue 'main;
-                                        }
-                                        if let Ok(_) = adjust_send_timer.send(Instant::now()) {};
-                                        let _ = waker_1.wake();
-                                    }
-                                    Err(quiche::h3::Error::StreamBlocked) => {
-                                        error!("StreamBlocked !!")
-                                    }
-                                    Err(e) => {
-                                        my_log::debug(format!(
-                                            "Error : Failed to send ping stream [{}] {:?}",
-                                            stream_id, e
-                                        ));
-                                    }
-                                }
+                        Http3Request::Ping(ping_status) => {
+                            if let Ok(stream_id) =
+                                h3_conn.send_request(&mut conn, ping_status.headers(), true)
+                            {
+                                req_start = std::time::Instant::now();
+                                let _ = waker_1.wake();
                             }
                         }
                         Http3Request::Body(mut body_req) => {

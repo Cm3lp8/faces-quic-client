@@ -164,9 +164,10 @@ mod response_builder {
     use log::{debug, error, info, warn};
     use quiche::h3::{self, Header, NameValue};
     use serde::{Deserialize, Serialize};
+    use stream_framer::FrameParser;
     use uuid::Uuid;
 
-    use crate::{client_manager::persistant_stream::StreamSub, RequestEventListener};
+    use crate::{client_manager::persistant_stream::StreamSub, my_log, RequestEventListener};
 
     use self::partial_response_impl::{handle_down_stream, respond_once};
 
@@ -711,6 +712,8 @@ mod response_builder {
         event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
         headers: Option<Vec<h3::Header>>,
         content_length: Option<usize>,
+        stream_body_len: Option<usize>,
+        stream_data: Vec<u8>,
         data: Vec<u8>,
         packet_count: usize,
         response_channel: (
@@ -751,7 +754,9 @@ mod response_builder {
                 event_subscriber,
                 headers: None,
                 content_length: None,
+                stream_body_len: None,
                 packet_count: 0,
+                stream_data: vec![],
                 data: vec![],
                 response_channel: crossbeam::channel::bounded(1),
                 progress_channel: crossbeam::channel::bounded(1),
@@ -788,7 +793,9 @@ mod response_builder {
                 event_subscriber,
                 headers: None,
                 content_length: None,
+                stream_body_len: None,
                 packet_count: 0,
+                stream_data: vec![],
                 data: vec![],
                 response_channel: crossbeam::channel::bounded(1),
                 progress_channel: crossbeam::channel::bounded(1),
@@ -797,8 +804,60 @@ mod response_builder {
             let progress_receiver = partial_response.progress_channel.1.clone();
             (partial_response, response_receiver, progress_receiver)
         }
+
+        pub fn has_partial_stream_body(&self) -> bool {
+            !self.data.is_empty()
+        }
+        pub fn update_until_completion(&mut self, data: Vec<u8>) -> Option<Vec<u8>> {
+            match self.write_stream_data_buffer(data) {
+                Ok(n) => {
+                    if n == 0 {
+                        return Some(self.get_completed_stream_data());
+                    }
+                }
+                Err(_) => {}
+            }
+            None
+        }
+        pub fn start_new_body_reception(&mut self, data: Vec<u8>) -> Option<Vec<u8>> {
+            if let Ok((total_len, current_body_chunk)) = data.parse_frame_header() {
+                self.set_stream_body_len(total_len);
+                match self.write_stream_data_buffer(current_body_chunk) {
+                    Ok(n) => {
+                        if n == 0 {
+                            return Some(self.get_completed_stream_data());
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            None
+        }
         pub fn _set_content_length(&mut self, content_length: usize) {
             self.content_length = Some(content_length);
+        }
+        pub fn set_stream_body_len(&mut self, stream_body_len: usize) {
+            self.stream_body_len = Some(stream_body_len);
+        }
+        pub fn get_completed_stream_data(&mut self) -> Vec<u8> {
+            std::mem::replace(&mut self.stream_data, vec![])
+        }
+
+        /// write in the stream data buffer, on success, returns the bytes remaining to complete
+        /// this body reception.
+        pub fn write_stream_data_buffer(&mut self, data: Vec<u8>) -> Result<usize, ()> {
+            if let Some(total_body_len) = self.stream_body_len.as_ref() {
+                let written = data.len() + self.stream_data.len();
+                if written <= *total_body_len {
+                    self.stream_data.extend(data);
+                    Ok(total_body_len - written)
+                } else {
+                    Err(())
+                }
+            } else {
+                Err(())
+            }
         }
         pub fn has_stream(&self) -> Option<&StreamSub> {
             self.streamable.as_ref()
@@ -915,31 +974,31 @@ mod response_builder {
                         .parse::<usize>()
                         .unwrap_or(0);
 
-                        match &self.streamable {
-                            Some(stream_sub) => handle_down_stream(self, body, stream_sub),
-                            None => {
-                                respond_once(
-                                    self,
-                                    body,
-                                    status,
-                                    content_len,
-                                    &mut can_delete_in_table,
-                                );
-                            }
-                        }
-                    } else {
-                        if let BodyType::UploadProgressStatusBody(progress_status) =
-                            body.body_type(self.req_path.as_str(), self.request_uuid)
-                        {
-                            for sub in &self.event_subscriber {
-                                if let Err(e) = sub.on_upload_progress(progress_status.clone()) {
-                                    error!("Failed to send Upload progress")
-                                }
-                            }
-                            return false;
-                        }
-                        debug!("Error : No headers found for body [{}]", body.stream_id());
+                        respond_once(self, body, status, content_len, &mut can_delete_in_table);
+                        return false;
                     }
+                    if let BodyType::UploadProgressStatusBody(progress_status) =
+                        body.body_type(self.req_path.as_str(), self.request_uuid)
+                    {
+                        for sub in &self.event_subscriber {
+                            if let Err(e) = sub.on_upload_progress(progress_status.clone()) {
+                                error!("Failed to send Upload progress")
+                            }
+                        }
+                        return false;
+                    }
+
+                    //in case it is a stream route
+                    let mut stream_sub = StreamSub::None;
+                    match &self.streamable {
+                        Some(strm_sub) => {
+                            stream_sub = strm_sub.clone();
+                        }
+                        None => {}
+                    }
+                    handle_down_stream(self, body, &stream_sub);
+
+                    //debug!("Error : No headers found for body [{}]", body.stream_id());
                 }
             }
             can_delete_in_table
@@ -956,22 +1015,50 @@ mod response_builder {
         use super::{CompletedResponse, Http3ResponseBody, PartialResponse, UploadProgressStatus};
 
         pub fn handle_down_stream(
-            partial_response: &PartialResponse,
+            partial_response: &mut PartialResponse,
             body: Http3ResponseBody,
             stream_sub: &StreamSub,
         ) {
-            let stream_event = StreamEvent::new(
-                partial_response.req_path.clone(),
-                partial_response.stream_id,
-                if let Some(hdrs) = partial_response.headers.clone() {
-                    hdrs
-                } else {
-                    vec![]
-                },
-                body.packet,
-            );
+            //update partial response with incoming stream body and send to user when all specified
+            //bytes length has been read.
 
-            stream_sub.callback(stream_event, StreamControlFlow);
+            if partial_response.has_partial_stream_body() {
+                match partial_response.update_until_completion(body.packet) {
+                    Some(completed) => {
+                        let stream_event = StreamEvent::new(
+                            partial_response.req_path.clone(),
+                            partial_response.stream_id,
+                            if let Some(hdrs) = partial_response.headers.clone() {
+                                hdrs
+                            } else {
+                                vec![]
+                            },
+                            completed,
+                        );
+
+                        stream_sub.callback(stream_event, StreamControlFlow);
+                    }
+                    None => {}
+                }
+            } else {
+                match partial_response.start_new_body_reception(body.packet) {
+                    Some(completed) => {
+                        let stream_event = StreamEvent::new(
+                            partial_response.req_path.clone(),
+                            partial_response.stream_id,
+                            if let Some(hdrs) = partial_response.headers.clone() {
+                                hdrs
+                            } else {
+                                vec![]
+                            },
+                            completed,
+                        );
+
+                        stream_sub.callback(stream_event, StreamControlFlow);
+                    }
+                    None => {}
+                }
+            }
         }
 
         pub fn respond_once(

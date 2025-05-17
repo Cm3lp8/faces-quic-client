@@ -5,7 +5,7 @@ pub use queue_builder::{RequestChannel, RequestHead, RequestQueue};
 pub use request_body::ContentType;
 pub use request_body::RequestBody;
 pub use request_builder::{
-    Http3Request, Http3RequestBuilder, Http3RequestConfirm, Http3RequestPrep,
+    Http3Request, Http3RequestBuilder, Http3RequestConfirm, Http3RequestPrep, PingStatus,
 };
 pub use request_format::{BodyType, H3Method};
 mod event_listener;
@@ -15,7 +15,10 @@ mod queue_builder {
     use log::{debug, info, warn};
     use quiche::h3::Header;
 
-    use self::{request_body::RequestBody, request_builder::BodyRequest};
+    use self::{
+        request_body::RequestBody,
+        request_builder::{BodyRequest, PingStatus},
+    };
 
     use super::*;
 
@@ -173,7 +176,7 @@ mod queue_builder {
         }
         pub fn send_ping(
             &self,
-            stream_id: u64,
+            ping_status: PingStatus,
         ) -> Result<
             (),
             crossbeam::channel::SendError<(Http3Request, crossbeam::channel::Sender<Instant>)>,
@@ -181,7 +184,7 @@ mod queue_builder {
             let body_sender = self.head.clone();
             let adjust_duration = crossbeam::channel::bounded::<Instant>(1);
 
-            body_sender.send((Http3Request::Ping(stream_id), adjust_duration.0))
+            body_sender.send((Http3Request::Ping(ping_status), adjust_duration.0))
         }
     }
 
@@ -320,7 +323,7 @@ mod request_builder {
     pub enum Http3Request {
         Body(BodyRequest),
         Header(HeaderRequest),
-        Ping(StreamId),
+        Ping(PingStatus),
         BodyFromFile,
     }
 
@@ -339,8 +342,35 @@ mod request_builder {
                     write!(f, " req = header [{:#?}]", header.headers())
                 }
                 Self::BodyFromFile => write!(f, "body from file []"),
-                Self::Ping(stream_id) => write!(f, "Ping for [{stream_id}]! "),
+                Self::Ping(ping_status) => write!(f, "Ping! "),
             }
+        }
+    }
+
+    pub struct PingStatus {
+        close_ping_emission: bool,
+        headers: Vec<h3::Header>,
+    }
+    impl Default for PingStatus {
+        fn default() -> Self {
+            Self {
+                close_ping_emission: false,
+                headers: vec![
+                    h3::Header::new(b":method", b"GET"),
+                    Header::new(b":path", b"/ping"),
+                    Header::new(b":authority", b"chat_client"),
+                    Header::new(b":scheme", b":https"),
+                ],
+            }
+        }
+    }
+    impl PingStatus {
+        pub fn close_ping(mut self) -> Self {
+            self.close_ping_emission = true;
+            self
+        }
+        pub fn headers(&self) -> &[Header] {
+            &self.headers
         }
     }
 
@@ -515,8 +545,10 @@ mod request_builder {
             self.path = Some(path);
             self
         }
-        pub fn down_stream(&mut self, path: String, payload: RequestBody) -> &mut Self {
-            self.method = Some(H3Method::POST { payload });
+        pub fn down_stream(&mut self, path: String, payload: Vec<u8>) -> &mut Self {
+            self.method = Some(H3Method::POST {
+                payload: RequestBody::new_data(payload),
+            });
             self.path = Some(path);
             self
         }
