@@ -156,15 +156,19 @@ mod queue_builder {
 
 mod response_builder {
     use std::{
+        arch::x86_64::_mm_sfence,
         fmt::{Debug, Display},
         sync::Arc,
+        time::Duration,
         usize,
     };
 
     use log::{debug, error, info, warn};
+    use mio::net::UnixDatagram;
+    use notify_rust::Notification;
     use quiche::h3::{self, Header, NameValue};
     use serde::{Deserialize, Serialize};
-    use stream_framer::FrameParser;
+    use stream_framer::{FrameParser, ParsedStreamData};
     use uuid::Uuid;
 
     use crate::{client_manager::persistant_stream::StreamSub, my_log, RequestEventListener};
@@ -703,6 +707,7 @@ mod response_builder {
             self.response_channel.recv()
         }
     }
+    type MessageLen = usize;
     pub struct PartialResponse {
         stream_id: u64,
         connexion_id: String,
@@ -712,8 +717,11 @@ mod response_builder {
         event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
         headers: Option<Vec<h3::Header>>,
         content_length: Option<usize>,
-        stream_body_len: Option<usize>,
-        stream_data: Vec<u8>,
+        stream_body_len: Option<Vec<usize>>,
+        stream_data: Vec<Vec<u8>>,
+        stream_message_count: usize,
+        incompleted_stream_data_buffer: Option<(MessageLen, Vec<u8>)>,
+        truncated_header_buffer: Option<Vec<u8>>,
         data: Vec<u8>,
         packet_count: usize,
         response_channel: (
@@ -755,6 +763,9 @@ mod response_builder {
                 headers: None,
                 content_length: None,
                 stream_body_len: None,
+                incompleted_stream_data_buffer: None,
+                truncated_header_buffer: None,
+                stream_message_count: 0,
                 packet_count: 0,
                 stream_data: vec![],
                 data: vec![],
@@ -794,7 +805,10 @@ mod response_builder {
                 headers: None,
                 content_length: None,
                 stream_body_len: None,
+                incompleted_stream_data_buffer: None,
+                truncated_header_buffer: None,
                 packet_count: 0,
+                stream_message_count: 0,
                 stream_data: vec![],
                 data: vec![],
                 response_channel: crossbeam::channel::bounded(1),
@@ -808,57 +822,70 @@ mod response_builder {
         pub fn has_partial_stream_body(&self) -> bool {
             !self.data.is_empty()
         }
-        pub fn update_until_completion(&mut self, data: Vec<u8>) -> Option<Vec<u8>> {
-            match self.write_stream_data_buffer(data) {
-                Ok(n) => {
-                    if n == 0 {
-                        return Some(self.get_completed_stream_data());
-                    }
-                }
-                Err(_) => {}
-            }
-            None
-        }
-        pub fn start_new_body_reception(&mut self, data: Vec<u8>) -> Option<Vec<u8>> {
-            if let Ok((total_len, current_body_chunk)) = data.parse_frame_header() {
-                self.set_stream_body_len(total_len);
-                match self.write_stream_data_buffer(current_body_chunk) {
-                    Ok(n) => {
-                        if n == 0 {
-                            return Some(self.get_completed_stream_data());
+        // return a possible collection of completed messages.
+        pub fn start_new_body_reception(&mut self, data: Vec<u8>) -> Option<Vec<Vec<u8>>> {
+            // One new body can contains multiples Header + message
+            //
+
+            let mut output: Vec<Vec<u8>> = vec![];
+
+            match data.parse_frame_header(
+                self.incompleted_stream_data_buffer.take(),
+                self.truncated_header_buffer.take(),
+            ) {
+                Ok(parsing_res) => {
+                    for parsed in parsing_res {
+                        match parsed {
+                            ParsedStreamData::CompletedWithHeader(msg_size, data) => {
+                                output.push(data);
+                            }
+                            ParsedStreamData::IncompleteWithHeader(msg_size, data) => {
+                                // this has to be the last
+                                // reserve for the next packet
+                                self.incompleted_stream_data_buffer = Some((msg_size, data));
+                            }
+                            ParsedStreamData::IncompleteWithoutHeaderUnFinished(data) => {
+                                // case when this packet is smaller than the message size
+                            }
+                            ParsedStreamData::TruncatedHeader(truncated_header) => {
+                                // truncated header
+                                match &self.truncated_header_buffer {
+                                    Some(_partial_hdr) => {}
+                                    None => self.truncated_header_buffer = Some(truncated_header),
+                                }
+                            }
                         }
                     }
-                    Err(_) => {}
+                }
+                Err(e) => {
+                    println!("[{:?}]", e);
                 }
             }
 
-            None
+            if output.is_empty() {
+                None
+            } else {
+                Some(output)
+            }
         }
         pub fn _set_content_length(&mut self, content_length: usize) {
             self.content_length = Some(content_length);
         }
         pub fn set_stream_body_len(&mut self, stream_body_len: usize) {
-            self.stream_body_len = Some(stream_body_len);
-        }
-        pub fn get_completed_stream_data(&mut self) -> Vec<u8> {
-            std::mem::replace(&mut self.stream_data, vec![])
-        }
-
-        /// write in the stream data buffer, on success, returns the bytes remaining to complete
-        /// this body reception.
-        pub fn write_stream_data_buffer(&mut self, data: Vec<u8>) -> Result<usize, ()> {
-            if let Some(total_body_len) = self.stream_body_len.as_ref() {
-                let written = data.len() + self.stream_data.len();
-                if written <= *total_body_len {
-                    self.stream_data.extend(data);
-                    Ok(total_body_len - written)
-                } else {
-                    Err(())
-                }
+            if let Some(stream_body_lens) = &mut self.stream_body_len {
+                stream_body_lens.push(stream_body_len);
             } else {
-                Err(())
+                self.stream_body_len = Some(vec![stream_body_len]);
             }
         }
+        pub fn get_completed_stream_data(&mut self) -> Vec<u8> {
+            if !self.stream_data.is_empty() {
+                self.stream_data.remove(0)
+            } else {
+                vec![]
+            }
+        }
+
         pub fn has_stream(&self) -> Option<&StreamSub> {
             self.streamable.as_ref()
         }
@@ -954,6 +981,22 @@ mod response_builder {
                     }
                 }
                 Http3Response::Body(body) => {
+                    //in case it is a stream route
+                    let mut stream_sub = StreamSub::None;
+                    match &self.streamable {
+                        Some(strm_sub) => {
+                            stream_sub = strm_sub.clone();
+                        }
+                        None => {}
+                    }
+                    match &self.streamable {
+                        Some(_) => {
+                            handle_down_stream(self, body, &stream_sub);
+                            return false;
+                        }
+
+                        None => {}
+                    }
                     if let Some(headers) = &self.headers {
                         let status = String::from_utf8_lossy(
                             headers
@@ -988,16 +1031,6 @@ mod response_builder {
                         return false;
                     }
 
-                    //in case it is a stream route
-                    let mut stream_sub = StreamSub::None;
-                    match &self.streamable {
-                        Some(strm_sub) => {
-                            stream_sub = strm_sub.clone();
-                        }
-                        None => {}
-                    }
-                    handle_down_stream(self, body, &stream_sub);
-
                     //debug!("Error : No headers found for body [{}]", body.stream_id());
                 }
             }
@@ -1022,9 +1055,10 @@ mod response_builder {
             //update partial response with incoming stream body and send to user when all specified
             //bytes length has been read.
 
-            if partial_response.has_partial_stream_body() {
-                match partial_response.update_until_completion(body.packet) {
-                    Some(completed) => {
+            partial_response.stream_message_count += 1;
+            match partial_response.start_new_body_reception(body.packet) {
+                Some(completed_coll) => {
+                    for completed in completed_coll {
                         let stream_event = StreamEvent::new(
                             partial_response.req_path.clone(),
                             partial_response.stream_id,
@@ -1038,26 +1072,8 @@ mod response_builder {
 
                         stream_sub.callback(stream_event, StreamControlFlow);
                     }
-                    None => {}
                 }
-            } else {
-                match partial_response.start_new_body_reception(body.packet) {
-                    Some(completed) => {
-                        let stream_event = StreamEvent::new(
-                            partial_response.req_path.clone(),
-                            partial_response.stream_id,
-                            if let Some(hdrs) = partial_response.headers.clone() {
-                                hdrs
-                            } else {
-                                vec![]
-                            },
-                            completed,
-                        );
-
-                        stream_sub.callback(stream_event, StreamControlFlow);
-                    }
-                    None => {}
-                }
+                None => {}
             }
         }
 
