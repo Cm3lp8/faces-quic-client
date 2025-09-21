@@ -156,7 +156,6 @@ mod queue_builder {
 
 mod response_builder {
     use std::{
-        arch::x86_64::_mm_sfence,
         fmt::{Debug, Display},
         sync::Arc,
         time::Duration,
