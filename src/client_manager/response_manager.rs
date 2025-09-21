@@ -836,16 +836,13 @@ mod response_builder {
                 Ok(parsing_res) => {
                     for parsed in parsing_res {
                         match parsed {
-                            ParsedStreamData::CompletedWithHeader(msg_size, data) => {
+                            ParsedStreamData::Completed(data) => {
                                 output.push(data);
                             }
-                            ParsedStreamData::IncompleteWithHeader(msg_size, data) => {
-                                // this has to be the last
+                            ParsedStreamData::Incompleted(msg_size, data) => {
+                                // this has to be the last in collection.
                                 // reserve for the next packet
                                 self.incompleted_stream_data_buffer = Some((msg_size, data));
-                            }
-                            ParsedStreamData::IncompleteWithoutHeaderUnFinished(data) => {
-                                // case when this packet is smaller than the message size
                             }
                             ParsedStreamData::TruncatedHeader(truncated_header) => {
                                 // truncated header
