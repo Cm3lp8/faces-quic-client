@@ -997,6 +997,8 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "stream_framer"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2abf4eb00fb3fb730395bca8c06e52442822aa51cca784cc3c83683fabbd706e"
 
 [[package]]
 name = "syn"
