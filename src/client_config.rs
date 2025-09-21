@@ -51,6 +51,7 @@ mod connexion_info {
     ///
     ///Mutable state to keep track of sockets addresses.
     ///
+    #[derive(Debug)]
     pub struct ConnexionInfos {
         inner: Arc<Mutex<ConnexionInfosInner>>,
     }
@@ -177,6 +178,7 @@ mod connexion_info {
     ///ConnectionInfos builder
     ///
     ///
+    #[derive(Debug)]
     enum ConnexionInfosInner {
         SetUp(ConnexionInfosSetup),
         Builded(ConnexionInfoBuilded),
@@ -204,6 +206,7 @@ mod connexion_info {
         }
     }
 
+    #[derive(Debug)]
     struct ConnexionInfosSetup {
         distant_socket: Option<SocketAddr>,
         local_socket: Option<SocketAddr>,
@@ -218,6 +221,7 @@ mod connexion_info {
         }
     }
 
+    #[derive(Debug)]
     struct ConnexionInfoBuilded {
         distant_socket: SocketAddr,
         local_socket: SocketAddr,

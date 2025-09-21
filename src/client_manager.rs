@@ -21,6 +21,7 @@ mod client_management {
 
     use std::{
         collections::HashMap,
+        fmt::Debug,
         hash::Hash,
         path::Path,
         sync::{Arc, Mutex},
@@ -52,6 +53,16 @@ mod client_management {
         request_builder: Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
         connexion_infos: ConnexionInfos,
         http3_client: Arc<Http3Client>,
+    }
+
+    impl Debug for Http3ClientManager {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "[Http3ClientManager] connexion infos : [{:?}]",
+                self.connexion_infos
+            )
+        }
     }
 
     impl Clone for Http3ClientManager {
