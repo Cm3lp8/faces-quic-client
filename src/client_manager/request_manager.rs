@@ -98,7 +98,7 @@ mod queue_builder {
                         break;
                     }
                 }
-                debug!(
+                println!(
                     "Body [{}] bytes send succesfully on stream [{stream_id}] in [{}] packets in [{:?}]",
                     byte_send, packet_count, send_duration.elapsed()
                 );

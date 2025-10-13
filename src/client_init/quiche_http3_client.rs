@@ -296,6 +296,7 @@ pub fn run(
                                     error!("failed to send back stream ids")
                                 }
                                 my_log::debug(format!("sended succes [{:?}]", header_req));
+                                println!("[{:?}]", format!("sended succes [{:?}]", header_req));
                             }
                         }
                         Http3Request::Ping(ping_status) => {
@@ -349,6 +350,10 @@ pub fn run(
 
                                         if body_req.is_end() {
                                             debug!(
+                                                " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_req.stream_id(),
+                                                h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
+                                            );
+                                            println!(
                                                 " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_req.stream_id(),
                                                 h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
                                             );

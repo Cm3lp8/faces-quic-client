@@ -174,8 +174,10 @@ mod client_management {
             );
             let content_type = data.content_type();
             my_log::debug("## HERE POST DATA ");
+            let data = data.into_bytes();
+            println!("faces_quic_client = data posted size [{:?}]", data.len());
             http3_request_builder
-                .post_data(path.to_string(), data.into_bytes())
+                .post_data(path.to_string(), data)
                 .set_content_type(content_type);
 
             my_log::debug("## HERE POST DATA DONE ");
