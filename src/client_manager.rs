@@ -166,7 +166,7 @@ mod client_management {
 
             ReqBuilderOutput(reqbuild_uuid, self)
         }
-        pub fn post_data(&self, path: &str, data: impl IntoBodyReq) -> ReqBuilderOutput {
+        pub fn post_json(&self, path: &str, data: impl IntoBodyReq) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
@@ -175,6 +175,29 @@ mod client_management {
             let content_type = data.content_type();
             my_log::debug("## HERE POST DATA ");
             let data = data.into_bytes();
+            println!("faces_quic_client = data posted size [{:?}]", data.len());
+            http3_request_builder
+                .post_data(path.to_string(), data)
+                .set_content_type(content_type);
+
+            my_log::debug("## HERE POST DATA DONE ");
+            self.request_builder
+                .lock()
+                .unwrap()
+                .entry(reqbuild_uuid)
+                .insert_entry(http3_request_builder);
+
+            my_log::debug("## HERE POST DATA DONE  & INSERTED");
+            ReqBuilderOutput(reqbuild_uuid, self)
+        }
+        pub fn post_data(&self, path: &str, data: Vec<u8>) -> ReqBuilderOutput {
+            let reqbuild_uuid = uuid::Uuid::new_v4();
+            let mut http3_request_builder = Http3RequestPrep::new(
+                self.connexion_infos.get_peer_socket_address(),
+                reqbuild_uuid,
+            );
+            let content_type = ContentType::OctetStream;
+            my_log::debug("## HERE POST DATA ");
             println!("faces_quic_client = data posted size [{:?}]", data.len());
             http3_request_builder
                 .post_data(path.to_string(), data)

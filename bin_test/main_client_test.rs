@@ -42,7 +42,7 @@ fn main() {
     let new_user = NewUser::create("Camille", 36, "1234");
 
     let res_2 = client
-        .post_data("/create_user", new_user)
+        .post_json("/create_user", new_user)
         .set_user_agent("camille_2")
         .header("x-name", "Cm3lp8")
         .subscribe_event(progress_tracker_3.clone())
