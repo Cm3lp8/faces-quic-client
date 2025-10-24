@@ -152,7 +152,7 @@ mod client_management {
             ReqBuilderOutput(reqbuild_uuid, self)
         }
 
-        pub fn kill_stream(&self, stream_id: StreamReqId) -> Result<(), ()> {
+        pub fn kill_stream(&self, stream_id: &StreamReqId) -> Result<(), ()> {
             if let Some(entry) = self
                 .request_builder
                 .lock()
