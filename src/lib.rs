@@ -12,4 +12,4 @@ pub use crate::client_manager::{BodyType, ClientRequestManager, ContentType, H3M
 pub use crate::client_manager::{ProgressTracker, RequestEvent, RequestEventListener};
 pub use crate::client_traits::IntoBodyReq;
 pub use crate::client_traits::Json;
-pub use client_manager::{KeepAlive, StreamEvent};
+pub use client_manager::{KeepAlive, StreamEvent, StreamReqId};
