@@ -211,7 +211,7 @@ mod stream_builder {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct StreamReqId {
         uuid: Uuid,
     }
