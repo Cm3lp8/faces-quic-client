@@ -1,6 +1,7 @@
 pub use event_stream_types::{KeepAlive, StreamControlFlow, StreamEvent, StreamSub};
-pub use ping_emission::PingEmitter;
-pub use stream_builder::StreamBuilder;
+
+pub use ping_emission::{PingEmissionControl, PingEmitter};
+pub use stream_builder::{StreamBuilder, StreamReqId};
 mod ping_emission {
     use std::{
         sync::{Arc, Mutex},
@@ -15,7 +16,18 @@ mod ping_emission {
     };
 
     pub struct PingEmissionControl {
-        sender: crossbeam::channel::Sender<()>,
+        sender: crossbeam::channel::Sender<PingControlKind>,
+    }
+
+    impl PingEmissionControl {
+        pub fn stop_keepalive(&self) {
+            let _ = self.sender.send(PingControlKind::StopKeepAlive);
+        }
+    }
+
+    enum PingControlKind {
+        StopKeepAlive,
+        Continue,
     }
 
     pub struct PingEmitter;
@@ -32,23 +44,36 @@ mod ping_emission {
             let request_sender = request_sender.clone();
             let waker = waker.clone();
 
-            std::thread::spawn(move || {
-                while let Err(_) = receiver.try_recv() {
-                    std::thread::sleep(ping_freq);
+            std::thread::spawn(move || 'ping: loop {
+                // drain control queue if any event
+                match receiver.try_recv() {
+                    Ok(control) => match control {
+                        PingControlKind::StopKeepAlive => {
+                            println!("Stream keep alive stopped");
+                            break 'ping;
+                        }
+                        PingControlKind::Continue => {}
+                    },
+                    _ => {}
+                }
+                std::thread::sleep(ping_freq);
 
-                    let ping_status = PingStatus::default();
+                let ping_status = PingStatus::default();
 
-                    if let Err(e) = request_sender.send_ping(ping_status) {
-                        my_log::debug(e);
-                    } else {
-                        if let Some(waker) = &*waker.lock().unwrap() {
-                            let _ = waker.wake();
-                        };
-                    }
+                if let Err(e) = request_sender.send_ping(ping_status) {
+                    my_log::debug(e);
+                } else {
+                    if let Some(waker) = &*waker.lock().unwrap() {
+                        let _ = waker.wake();
+                    };
                 }
             });
 
             PingEmissionControl { sender }
+        }
+
+        pub fn stop_ping(&self) -> Result<(), ()> {
+            Err(())
         }
     }
 }
@@ -159,7 +184,10 @@ mod stream_builder {
             self
         }
 
-        pub fn open(&self, cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static) {
+        pub fn open(
+            &self,
+            cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static,
+        ) -> StreamReqId {
             let uuid = self.uuid;
 
             my_log::log("Stream_opening");
@@ -178,6 +206,21 @@ mod stream_builder {
                     }
                 });
             };
+
+            StreamReqId::new(uuid)
+        }
+    }
+
+    pub struct StreamReqId {
+        uuid: Uuid,
+    }
+
+    impl StreamReqId {
+        pub fn new(uuid: Uuid) -> Self {
+            Self { uuid }
+        }
+        pub fn get_id(&self) -> Uuid {
+            self.uuid
         }
     }
 }

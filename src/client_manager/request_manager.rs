@@ -240,7 +240,7 @@ mod queue_builder {
 mod request_builder {
     use core::panic;
     use std::{
-        fmt::Debug,
+        fmt::{write, Debug},
         io::Read,
         net::SocketAddr,
         path::{Path, PathBuf},
@@ -254,7 +254,10 @@ mod request_builder {
     use ring::error;
     use uuid::Uuid;
 
-    use crate::{client_manager::persistant_stream::KeepAlive, my_log};
+    use crate::{
+        client_manager::persistant_stream::{KeepAlive, PingEmissionControl},
+        my_log,
+    };
 
     use self::{
         event_listener::RequestEventListener, request_body::RequestBody, request_format::H3Method,
@@ -305,6 +308,8 @@ mod request_builder {
                 user_agent: None,
                 authority: peer_socket_address,
                 custom_headers: None,
+                ping_emission_control: None,
+                long_connection_stream_id: None,
                 uuid: req_build_uuid,
             }
         }
@@ -322,9 +327,11 @@ mod request_builder {
     ///
     pub enum Http3Request {
         Body(BodyRequest),
+        CloseStream { stream_id: u64 },
         Header(HeaderRequest),
         Ping(PingStatus),
         BodyFromFile,
+        GoAway { stream_id: u64 },
     }
 
     impl Debug for Http3Request {
@@ -338,11 +345,13 @@ mod request_builder {
                         //   data_len
                     )
                 }
+                Self::CloseStream { stream_id } => write!(f, " close stream [{}]", stream_id),
                 Self::Header(header) => {
                     write!(f, " req = header [{:#?}]", header.headers())
                 }
                 Self::BodyFromFile => write!(f, "body from file []"),
                 Self::Ping(ping_status) => write!(f, "Ping! "),
+                Self::GoAway { stream_id } => write!(f, " GoAway stream [{}]", stream_id),
             }
         }
     }
@@ -498,6 +507,8 @@ mod request_builder {
                 user_agent: None,
                 authority: peer_socket_address,
                 custom_headers: None,
+                ping_emission_control: None,
+                long_connection_stream_id: None,
                 uuid,
             }
         }
@@ -513,6 +524,8 @@ mod request_builder {
         user_agent: Option<String>,
         authority: Option<SocketAddr>,
         custom_headers: Option<Vec<(String, String)>>,
+        ping_emission_control: Option<PingEmissionControl>,
+        long_connection_stream_id: Option<u64>,
         uuid: Uuid,
     }
 
@@ -584,6 +597,16 @@ mod request_builder {
             event_listener: Arc<dyn RequestEventListener + 'static + Send + Sync>,
         ) {
             self.event_subscriber.push(event_listener.clone());
+        }
+        pub fn set_stream_ping_controller(&mut self, ping_controller: PingEmissionControl) {}
+        pub fn get_long_connection_stream_id(&self) -> Option<u64> {
+            self.long_connection_stream_id
+        }
+        pub fn set_long_connection_stream_id(&mut self, stream_id: u64) {
+            self.long_connection_stream_id = Some(stream_id);
+        }
+        pub fn get_stream_ping_controller(&self) -> Option<&PingEmissionControl> {
+            self.ping_emission_control.as_ref()
         }
         pub fn build_down_stream(
             &mut self,

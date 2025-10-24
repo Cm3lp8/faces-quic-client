@@ -34,6 +34,7 @@ mod client_management {
 
     use crate::{
         client_config::{self, ClientConfig},
+        client_manager::persistant_stream::StreamReqId,
         client_traits::IntoBodyReq,
         my_log,
     };
@@ -149,6 +150,28 @@ mod client_management {
                 .entry(reqbuild_uuid)
                 .insert_entry(http3_request_builder);
             ReqBuilderOutput(reqbuild_uuid, self)
+        }
+
+        pub fn kill_stream(&self, stream_id: StreamReqId) -> Result<(), ()> {
+            if let Some(entry) = self
+                .request_builder
+                .lock()
+                .unwrap()
+                .get(&stream_id.get_id())
+            {
+                // stop ping emission emission thread associated with the long connection.
+                if let Some(ping_controller) = entry.get_stream_ping_controller() {
+                    ping_controller.stop_keepalive();
+                }
+
+                if let Some(long_connection_stream_id) = entry.get_long_connection_stream_id() {
+                    let _ = self.request_manager.close_stream(long_connection_stream_id);
+                }
+            }
+            Ok(())
+        }
+        pub fn close_connection(&self) -> Result<(), ()> {
+            self.request_manager.close_connection()
         }
 
         pub fn get(&self, path: &str) -> ReqBuilderOutput {

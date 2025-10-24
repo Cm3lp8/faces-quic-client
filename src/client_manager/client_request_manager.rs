@@ -2,7 +2,7 @@ pub use client_request_mngr::ClientRequestManager;
 
 mod client_request_mngr {
     use std::{
-        sync::{Arc, Mutex},
+        sync::{atomic::AtomicU64, Arc, Mutex},
         time::{Duration, Instant},
     };
 
@@ -28,6 +28,7 @@ mod client_request_mngr {
     ///Interface with the client. Create a new request, send data from here.
     ///
     pub struct ClientRequestManager {
+        stream_id_counter: Arc<AtomicU64>,
         request_head: RequestHead,
         response_queue: ResponseQueue,
         body_head: BodyHead,
@@ -40,6 +41,7 @@ mod client_request_mngr {
     impl Clone for ClientRequestManager {
         fn clone(&self) -> Self {
             Self {
+                stream_id_counter: self.stream_id_counter.clone(),
                 request_head: self.request_head.clone(),
                 response_queue: self.response_queue.clone(),
                 body_head: self.body_head.clone(),
@@ -64,6 +66,7 @@ mod client_request_mngr {
             response_manager.run();
 
             Self {
+                stream_id_counter: Arc::new(AtomicU64::new(0)),
                 request_head,
                 response_queue,
                 body_head,
@@ -72,6 +75,33 @@ mod client_request_mngr {
                 http3_client,
                 waker: Arc::new(Mutex::new(None)),
             }
+        }
+        pub fn close_stream(&self, stream_id: u64) -> Result<(), ()> {
+            let adjust_sending_duration = crossbeam::channel::bounded::<Instant>(1);
+            let res = self
+                .request_head
+                .send_request((
+                    Http3Request::CloseStream { stream_id },
+                    adjust_sending_duration.0,
+                ))
+                .map_err(|e| ());
+            self.wake_client();
+            res
+        }
+        pub fn close_connection(&self) -> Result<(), ()> {
+            let adjust_sending_duration = crossbeam::channel::bounded::<Instant>(1);
+            let stream_id = self
+                .stream_id_counter
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let res = self
+                .request_head
+                .send_request((
+                    Http3Request::GoAway { stream_id },
+                    adjust_sending_duration.0,
+                ))
+                .map_err(|e| ());
+            self.wake_client();
+            res
         }
         pub fn wake_client(&self) {
             if let Some(waker) = &*self.waker.lock().unwrap() {
@@ -124,15 +154,21 @@ mod client_request_mngr {
                     let stream_ids = http3_confirm.unwrap().wait_stream_ids();
                     let stream_id = stream_ids.as_ref().unwrap().0;
 
+                    self.stream_id_counter
+                        .store(stream_id, std::sync::atomic::Ordering::Relaxed);
+
+                    http3_request_builder.set_long_connection_stream_id(stream_id);
+
                     for req in &http3_request {
                         match req {
                             Http3RequestPrep::Ping(duration) => {
-                                let ping_stop = PingEmitter::run(
+                                let ping_control = PingEmitter::run(
                                     *duration,
                                     &self.request_head,
                                     stream_id,
                                     &self.waker,
                                 );
+                                http3_request_builder.set_stream_ping_controller(ping_control);
                             }
 
                             _ => {}
@@ -240,6 +276,8 @@ mod client_request_mngr {
                     }
                     let stream_ids = http3_confirm.unwrap().wait_stream_ids();
                     let stream_id = stream_ids.as_ref().unwrap().0;
+                    self.stream_id_counter
+                        .store(stream_id, std::sync::atomic::Ordering::Relaxed);
 
                     for req in http3_request {
                         match req {
@@ -352,6 +390,8 @@ mod client_request_mngr {
                     }
                     let stream_ids = http3_confirm.unwrap().wait_stream_ids();
                     let stream_id = stream_ids.as_ref().unwrap().0;
+                    self.stream_id_counter
+                        .store(stream_id, std::sync::atomic::Ordering::Relaxed);
 
                     for req in http3_request {
                         match req {

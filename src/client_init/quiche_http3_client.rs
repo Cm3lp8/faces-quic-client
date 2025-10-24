@@ -1,7 +1,11 @@
+use crossbeam::channel::Sender;
 use log::{debug, error, info, warn};
 //#[macro_use]
 use mio::{event::Event, Events, Poll, Token, Waker};
-use quiche::h3::{self};
+use quiche::{
+    h3::{self},
+    Connection,
+};
 use ring::rand::*;
 use std::{
     collections::HashMap,
@@ -298,6 +302,44 @@ pub fn run(
                                 my_log::debug(format!("sended succes [{:?}]", header_req));
                                 println!("[{:?}]", format!("sended succes [{:?}]", header_req));
                             }
+                        }
+                        Http3Request::CloseStream { stream_id } => {
+                            if !conn.stream_writable(stream_id, 512).unwrap() {
+                                pending_bodies.entry(stream_id).or_default().push((
+                                    vec![],
+                                    adjust_send_timer,
+                                    true,
+                                ));
+                                pending_count += 1;
+                            //      continue 'main;
+                            } else {
+                                match h3_conn.send_body(&mut conn, stream_id, &[], true) {
+                                    Ok(v) => {
+                                        println!(
+                                            "Send stream close message for stream_id [{:?}]",
+                                            stream_id
+                                        );
+                                        bodies_send += 1;
+                                        h3_byte_written += v;
+
+                                        if let Ok(e) = adjust_send_timer.send(Instant::now()) {}
+                                    }
+                                    Err(quiche::h3::Error::StreamBlocked) => {
+                                        error!("StreamBlocked !!")
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                    "Error : Failed to send body request [{}], packet [{}] ",
+                                    stream_id,
+                                    e
+                                );
+                                    }
+                                }
+                            }
+                        }
+                        Http3Request::GoAway { stream_id } => {
+                            let _ = h3_conn.send_goaway(&mut conn, stream_id);
+                            ()
                         }
                         Http3Request::Ping(ping_status) => {
                             if let Ok(stream_id) =
