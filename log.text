@@ -7,27 +7,6 @@
     ":method: POST",
     ":scheme: https",
     ":path: /signin",
-    "content-length: 40",
-    ":authority: 51.254.207.171:443",
-    "content-type: application/json",
-    "accept: */*",
-]]]
-["sended succes [HeaderRequest { headers: [\":method: POST\", \":scheme: https\", \":path: /signin\", \"content-length: 40\", \":authority: 51.254.207.171:443\", \"content-type: application/json\", \"accept: */*\"], stream_id_response: Sender { .. }, is_end: false }]"]
-no body
-[Content {
-    payload: ,
-}]
-["%%%%%% A REQ %%%"]
-[req: body =  stream_id []]
-["## HERE POST DATA "]
-["## HERE POST DATA DONE "]
-["## HERE POST DATA DONE  & INSERTED"]
-["## HERE POST DATA locked "]
-["%%%%%% A REQ %%%"]
-[ req = header [[
-    ":method: POST",
-    ":scheme: https",
-    ":path: /signin",
     "content-length: 37",
     ":authority: 51.254.207.171:443",
     "content-type: application/json",
@@ -40,69 +19,129 @@ no body
 }]
 ["%%%%%% A REQ %%%"]
 [req: body =  stream_id []]
-["## HERE POST DATA "]
-["## HERE POST DATA DONE "]
-["## HERE POST DATA DONE  & INSERTED"]
-["## HERE POST DATA locked "]
+["build STREAM BUILDER"]
+Stream_opening
+["ici connexion ping"]
+["building en cours"]
 ["%%%%%% A REQ %%%"]
 [ req = header [[
     ":method: POST",
     ":scheme: https",
-    ":path: /pull_context",
-    "content-length: 17",
+    ":path: /notification_bus",
+    "content-length: 50",
     ":authority: 51.254.207.171:443",
-    "content-type: application/octet-stream",
     "accept: */*",
-    "authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjEyNDY5OTR9.UTyGWZM5p93vASph4vzQeUR6aA5t3PxmswzF3meqqNY",
+    "authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjE1NzcxOTN9.5I9GLmjyQ4nkwp97wihMV5TQRLiUOCEs4Id2WgbgRr8",
 ]]]
-no body
-["sended succes [HeaderRequest { headers: [\":method: POST\", \":scheme: https\", \":path: /pull_context\", \"content-length: 17\", \":authority: 51.254.207.171:443\", \"content-type: application/octet-stream\", \"accept: */*\", \"authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjEyNDY5OTR9.UTyGWZM5p93vASph4vzQeUR6aA5t3PxmswzF3meqqNY\"], stream_id_response: Sender { .. }, is_end: false }]"]
-[Content {
-    payload: ,
-}]
-["%%%%%% A REQ %%%"]
-[req: body =  stream_id []]
-["## HERE POST DATA "]["## HERE POST DATA "]
-
-["## HERE POST DATA DONE "]["## HERE POST DATA DONE "]
-
-["## HERE POST DATA DONE  & INSERTED"]["## HERE POST DATA DONE  & INSERTED"]
-
-["## HERE POST DATA locked "]["## HERE POST DATA locked "]
-
-["%%%%%% A REQ %%%"]
-[ req = header [[
-    ":method: POST",
-    ":scheme: https",
-    ":path: /fetch_anim",
-    "content-length: 48",
-    ":authority: 51.254.207.171:443",
-    "content-type: application/octet-stream",
-    "accept: */*",
-    "authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjEyNDY5OTR9.UTyGWZM5p93vASph4vzQeUR6aA5t3PxmswzF3meqqNY",
-]]]
-["sended succes [HeaderRequest { headers: [\":method: POST\", \":scheme: https\", \":path: /fetch_anim\", \"content-length: 48\", \":authority: 51.254.207.171:443\", \"content-type: application/octet-stream\", \"accept: */*\", \"authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjEyNDY5OTR9.UTyGWZM5p93vASph4vzQeUR6aA5t3PxmswzF3meqqNY\"], stream_id_response: Sender { .. }, is_end: false }]"]
+["sended succes [HeaderRequest { headers: [\":method: POST\", \":scheme: https\", \":path: /notification_bus\", \"content-length: 50\", \":authority: 51.254.207.171:443\", \"accept: */*\", \"authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjE1NzcxOTN9.5I9GLmjyQ4nkwp97wihMV5TQRLiUOCEs4Id2WgbgRr8\"], stream_id_response: Sender { .. }, is_end: false }]"]
 no body
 [Content {
     payload: ,
 }]
-["%%%%%% A REQ %%%"]
-[ req = header [[
-    ":method: POST",
-    ":scheme: https",
-    ":path: /fetch_anim",
-    "content-length: 48",
-    ":authority: 51.254.207.171:443",
-    "content-type: application/octet-stream",
-    "accept: */*",
-    "authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjEyNDY5OTR9.UTyGWZM5p93vASph4vzQeUR6aA5t3PxmswzF3meqqNY",
-]]]
-["sended succes [HeaderRequest { headers: [\":method: POST\", \":scheme: https\", \":path: /fetch_anim\", \"content-length: 48\", \":authority: 51.254.207.171:443\", \"content-type: application/octet-stream\", \"accept: */*\", \"authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMTlhMDg2ZC1lNGZkLTc1MDEtYjZjMi0zYTYwOGIyODM0MmYiLCJleHAiOjE3NjEyNDY5OTR9.UTyGWZM5p93vASph4vzQeUR6aA5t3PxmswzF3meqqNY\"], stream_id_response: Sender { .. }, is_end: false }]"]
 no body
-[Content {
-    payload: ,
-}]
 ["%%%%%% A REQ %%%"]
 [req: body =  stream_id []]
 ["%%%%%% A REQ %%%"]
-[req: body =  stream_id []]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]
+["%%%%%% A REQ %%%"]
+[Ping! ]

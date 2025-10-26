@@ -19,6 +19,7 @@ use crate::{
     client_config::ClientConfig,
     client_manager::{BodyQueue, Http3Request, Http3Response, RequestQueue, ResponseHead},
     my_log,
+    thread_controller::{self, ThreadController},
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
 const WAKER_TOKEN: Token = Token(1);
@@ -29,6 +30,7 @@ pub fn run(
     response_queue: ResponseHead,
     _body_queue: BodyQueue,
     confirm_connexion: crossbeam::channel::Sender<(String, Waker)>,
+    thread_controller: &ThreadController,
 ) -> Result<String, ()> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
@@ -122,6 +124,9 @@ pub fn run(
     let mut bytes_re = 0;
 
     'main: loop {
+        if !thread_controller.is_on() {
+            break 'main Ok("thread stopped !".to_owned());
+        }
         match poll.poll(&mut events, conn.timeout()) {
             Ok(_) => {}
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {

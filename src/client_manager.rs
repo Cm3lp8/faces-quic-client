@@ -26,6 +26,7 @@ mod client_management {
         hash::Hash,
         path::Path,
         sync::{Arc, Mutex},
+        time::Duration,
     };
 
     use log::{error, info};
@@ -37,6 +38,7 @@ mod client_management {
         client_manager::persistant_stream::StreamReqId,
         client_traits::IntoBodyReq,
         my_log,
+        thread_controller::{self, ThreadController},
     };
 
     use self::{
@@ -55,6 +57,7 @@ mod client_management {
         request_builder: Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
         connexion_infos: ConnexionInfos,
         http3_client: Arc<Http3Client>,
+        thread_controller: ThreadController,
     }
 
     impl Debug for Http3ClientManager {
@@ -77,6 +80,7 @@ mod client_management {
                 request_builder: Arc::new(Mutex::new(HashMap::new())),
                 connexion_infos: self.connexion_infos.clone(),
                 http3_client: self.http3_client.clone(),
+                thread_controller: self.thread_controller.clone(),
             }
         }
     }
@@ -91,19 +95,21 @@ mod client_management {
         pub fn new(peer_socket_address: &str) -> Self {
             let client_config = ClientConfig::new();
             my_log::init();
+            let thread_controller = ThreadController::new("shutdown_all_workers");
             client_config
                 .connexion_infos()
                 .set_peer_address(peer_socket_address)
                 .set_local_address("0.0.0.0:0")
                 .build_connexion_infos();
             let request_channel = RequestChannel::new();
-            let response_channel = ResponseChannel::new();
+            let response_channel = ResponseChannel::new(&thread_controller);
             let body_channel = BodyChannel::new();
             let http3_client = Http3Client::new(
                 client_config.clone(),
                 request_channel.get_queue(),
                 response_channel.get_head(),
                 body_channel.get_queue(),
+                &thread_controller,
             );
             let request_builder: Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>> =
                 Arc::new(Mutex::new(HashMap::new()));
@@ -115,6 +121,7 @@ mod client_management {
                 body_channel.get_head(),
                 client_config.connexion_infos(),
                 http3_client_arc,
+                &thread_controller,
             );
 
             Self {
@@ -125,11 +132,26 @@ mod client_management {
                 request_builder,
                 connexion_infos: client_config.connexion_infos(),
                 http3_client: http3_client_arc_clone,
+                thread_controller,
             }
         }
 
         pub fn builder() -> () {
             ()
+        }
+
+        pub fn shutdown_client(&self) {
+            println!("shutting down quic client !!!");
+            self.thread_controller.switch_off();
+        }
+        pub fn start_new_connection(&self) -> Result<(), ()> {
+            std::thread::sleep(Duration::from_millis(350)); // this sleep is to wait for response
+                                                            // 250 ms
+                                                            // timeout / TODO find better
+                                                            // approach
+            self.thread_controller.switch_on();
+            self.request_manager.rerun();
+            Ok(())
         }
 
         pub fn request_manager_ref(&self) -> &ClientRequestManager {

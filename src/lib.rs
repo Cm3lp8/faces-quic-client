@@ -4,6 +4,7 @@ mod client_init;
 mod client_manager;
 mod client_traits;
 mod my_log;
+mod thread_controller;
 
 pub use crate::client_config::{ClientConfig, ConnexionInfos};
 pub use crate::client_manager::Http3ClientManager;

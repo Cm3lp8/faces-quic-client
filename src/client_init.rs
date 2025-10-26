@@ -9,6 +9,7 @@ mod http3_client {
     use crate::{
         client_config::ClientConfig,
         client_manager::{BodyQueue, RequestQueue, ResponseHead},
+        thread_controller::{self, ThreadController},
     };
 
     use super::*;
@@ -19,6 +20,7 @@ mod http3_client {
         response_head: ResponseHead,
         body_queue: BodyQueue,
         connexion_opened: Arc<Mutex<bool>>,
+        thread_controller: ThreadController,
     }
 
     impl Http3Client {
@@ -27,6 +29,7 @@ mod http3_client {
             request_queue: RequestQueue,
             response_head: ResponseHead,
             body_queue: BodyQueue,
+            thread_controller: &ThreadController,
         ) -> Self {
             Self {
                 client_config: Arc::new(client_configuration),
@@ -34,6 +37,7 @@ mod http3_client {
                 body_queue,
                 response_head,
                 connexion_opened: Arc::new(Mutex::new(false)),
+                thread_controller: thread_controller.clone(),
             }
         }
 
@@ -69,6 +73,7 @@ mod http3_client {
             let confirm_connexion_chan = crossbeam::channel::bounded::<(String, Waker)>(1);
             let confirmation_sender = confirm_connexion_chan.0.clone();
 
+            let thread_controller = self.thread_controller.clone();
             std::thread::spawn(move || {
                 if let Ok(finished) = quiche_http3_client::run(
                     configuration_clone,
@@ -76,6 +81,7 @@ mod http3_client {
                     resp_head,
                     body_queue,
                     confirmation_sender,
+                    &thread_controller,
                 ) {
                     *connexion_opened.lock().unwrap() = false;
                 };

@@ -22,6 +22,7 @@ mod client_request_mngr {
             BodyHead, ResponseQueue,
         },
         my_log,
+        thread_controller::{self, ThreadController},
     };
 
     ///
@@ -36,6 +37,7 @@ mod client_request_mngr {
         response_manager: ResponseManager,
         http3_client: Arc<Http3Client>,
         waker: Arc<Mutex<Option<Waker>>>,
+        thread_controller: ThreadController,
     }
 
     impl Clone for ClientRequestManager {
@@ -49,6 +51,7 @@ mod client_request_mngr {
                 response_manager: self.response_manager.clone(),
                 http3_client: self.http3_client.clone(),
                 waker: self.waker.clone(),
+                thread_controller: self.thread_controller.clone(),
             }
         }
     }
@@ -60,9 +63,10 @@ mod client_request_mngr {
             body_head: BodyHead,
             connexion_infos: ConnexionInfos,
             http3_client: Arc<Http3Client>,
+            thread_controller: &ThreadController,
         ) -> Self {
             let resp_queue = response_queue.clone();
-            let response_manager = ResponseManager::new(resp_queue);
+            let response_manager = ResponseManager::new(resp_queue, thread_controller);
             response_manager.run();
 
             Self {
@@ -74,7 +78,11 @@ mod client_request_mngr {
                 response_manager,
                 http3_client,
                 waker: Arc::new(Mutex::new(None)),
+                thread_controller: thread_controller.clone(),
             }
+        }
+        pub fn rerun(&self) {
+            self.response_manager.run();
         }
         pub fn close_stream(&self, stream_id: u64) -> Result<(), ()> {
             let adjust_sending_duration = crossbeam::channel::bounded::<Instant>(1);
@@ -190,6 +198,7 @@ mod client_request_mngr {
                     let response_sender = response_chan.0.clone();
                     let stream_cb_syncable = Arc::new(stream_cb);
 
+                    let thread_controller = self.thread_controller.clone();
                     std::thread::spawn(move || {
                         /*
                          *
@@ -209,6 +218,7 @@ mod client_request_mngr {
                                 &stream_ids,
                                 completed_channel,
                                 progress_channel,
+                                &thread_controller,
                             );
                             if let Err(e) = response_sender.send(peer_response) {
                                 println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
@@ -294,6 +304,7 @@ mod client_request_mngr {
                     let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
                     let response_sender = response_chan.0.clone();
 
+                    let thread_controller = self.thread_controller.clone();
                     std::thread::spawn(move || {
                         /*
                          *
@@ -312,6 +323,7 @@ mod client_request_mngr {
                                 &stream_ids,
                                 completed_channel,
                                 progress_channel,
+                                &thread_controller,
                             );
                             if let Err(e) = response_sender.send(peer_response) {
                                 println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
@@ -407,6 +419,7 @@ mod client_request_mngr {
                     let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
                     let response_sender = response_chan.0.clone();
 
+                    let thread_controller = self.thread_controller.clone();
                     std::thread::spawn(move || {
                         /*
                          *
@@ -425,6 +438,7 @@ mod client_request_mngr {
                                 &stream_ids,
                                 completed_channel,
                                 progress_channel,
+                                &thread_controller,
                             );
                             if let Err(e) = response_sender.send(peer_response) {
                                 println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);

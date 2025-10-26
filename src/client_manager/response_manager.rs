@@ -6,7 +6,15 @@ pub use response_builder::{
 pub use response_mngr::ResponseManager;
 
 mod response_mngr {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        thread::Thread,
+        time::Duration,
+    };
+
+    use crossbeam::channel::RecvError;
+
+    use crate::thread_controller::{self, ThreadController};
 
     use super::*;
 
@@ -17,13 +25,15 @@ mod response_mngr {
             crossbeam::channel::Receiver<PartialResponse>,
         ),
         is_running: Arc<Mutex<bool>>,
+        thread_controller: ThreadController,
     }
     impl ResponseManager {
-        pub fn new(response_queue: ResponseQueue) -> Self {
+        pub fn new(response_queue: ResponseQueue, thread_controller: &ThreadController) -> Self {
             Self {
                 response_queue,
                 partial_response_channel: crossbeam::channel::unbounded(),
                 is_running: Arc::new(Mutex::new(false)),
+                thread_controller: thread_controller.clone(),
             }
         }
         ///
@@ -33,7 +43,11 @@ mod response_mngr {
             if !*guard {
                 response_manager_worker::run(
                     self.response_queue.clone(),
-                    PartialResponseReceiver::new(self.partial_response_channel.1.clone()),
+                    PartialResponseReceiver::new(
+                        self.partial_response_channel.1.clone(),
+                        &self.thread_controller,
+                    ),
+                    &self.thread_controller,
                 );
                 *guard = true;
             }
@@ -51,20 +65,35 @@ mod response_mngr {
                 response_queue: self.response_queue.clone(),
                 is_running: self.is_running.clone(),
                 partial_response_channel: self.partial_response_channel.clone(),
+                thread_controller: self.thread_controller.clone(),
             }
         }
     }
     pub struct PartialResponseReceiver {
         receiver: crossbeam::channel::Receiver<PartialResponse>,
+        thread_controller: ThreadController,
     }
     impl PartialResponseReceiver {
         pub fn recv(&self) -> Result<PartialResponse, crossbeam::channel::RecvError> {
-            self.receiver.recv()
+            while self.thread_controller.is_on() {
+                match self.receiver.recv_timeout(Duration::from_millis(250)) {
+                    Ok(res) => return Ok(res),
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                        return Err(RecvError)
+                    }
+                };
+            }
+            Err(crossbeam::channel::RecvError)
         }
         pub fn new(
             receiver: crossbeam::channel::Receiver<PartialResponse>,
+            thread_controller: &ThreadController,
         ) -> PartialResponseReceiver {
-            PartialResponseReceiver { receiver }
+            PartialResponseReceiver {
+                receiver,
+                thread_controller: thread_controller.clone(),
+            }
         }
     }
     pub struct PartialResponseSubmitter {
@@ -83,6 +112,12 @@ mod response_mngr {
     }
 }
 mod queue_builder {
+    use std::{thread::Thread, time::Duration};
+
+    use crossbeam::channel::RecvError;
+
+    use crate::thread_controller::{self, ThreadController};
+
     use super::*;
 
     #[derive(Clone)]
@@ -91,6 +126,7 @@ mod queue_builder {
             crossbeam::channel::Sender<Http3Response>,
             crossbeam::channel::Receiver<Http3Response>,
         ),
+        thread_controller: ThreadController,
     }
     pub struct ResponseHead {
         head: crossbeam::channel::Sender<Http3Response>,
@@ -120,10 +156,20 @@ mod queue_builder {
     ///
     pub struct ResponseQueue {
         queue: crossbeam::channel::Receiver<Http3Response>,
+        thread_controller: ThreadController,
     }
     impl ResponseQueue {
         pub fn pop_response(&self) -> Result<Http3Response, crossbeam::channel::RecvError> {
-            self.queue.recv()
+            while self.thread_controller.is_on() {
+                match self.queue.recv_timeout(Duration::from_millis(250)) {
+                    Ok(res) => return Ok(res),
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                        return Err(RecvError)
+                    }
+                };
+            }
+            Err(crossbeam::channel::RecvError)
         }
     }
 
@@ -131,14 +177,16 @@ mod queue_builder {
         fn clone(&self) -> Self {
             Self {
                 queue: self.queue.clone(),
+                thread_controller: self.thread_controller.clone(),
             }
         }
     }
 
     impl ResponseChannel {
-        pub fn new() -> Self {
+        pub fn new(thread_controller: &ThreadController) -> Self {
             Self {
                 channel: crossbeam::channel::unbounded(),
+                thread_controller: thread_controller.clone(),
             }
         }
         pub fn get_head(&self) -> ResponseHead {
@@ -149,6 +197,7 @@ mod queue_builder {
         pub fn get_queue(&self) -> ResponseQueue {
             ResponseQueue {
                 queue: self.channel.1.clone(),
+                thread_controller: self.thread_controller.clone(),
             }
         }
     }
@@ -162,6 +211,7 @@ mod response_builder {
         usize,
     };
 
+    use crossbeam::channel::RecvError;
     use log::{debug, error, info, warn};
     use mio::net::UnixDatagram;
     use notify_rust::Notification;
@@ -170,7 +220,12 @@ mod response_builder {
     use stream_framer::{FrameParser, ParsedStreamData};
     use uuid::Uuid;
 
-    use crate::{client_manager::persistant_stream::StreamSub, my_log, RequestEventListener};
+    use crate::{
+        client_manager::persistant_stream::StreamSub,
+        my_log,
+        thread_controller::{self, ThreadController},
+        RequestEventListener,
+    };
 
     use self::partial_response_impl::{handle_down_stream, respond_once};
 
@@ -658,24 +713,28 @@ mod response_builder {
         }
     }
 
+    /// Wait response while blocking, timeout after N Seconds
     #[allow(warnings)]
     pub struct WaitPeerResponse {
         stream_id: u64,
         connexion_id: String,
         response_channel: crossbeam::channel::Receiver<CompletedResponse>,
         progress_channel: crossbeam::channel::Receiver<UploadProgressStatus>,
+        thread_controller: ThreadController,
     }
     impl WaitPeerResponse {
         pub fn new(
             stream_ids: &(u64, String),
             response_channel: crossbeam::channel::Receiver<CompletedResponse>,
             progress_channel: crossbeam::channel::Receiver<UploadProgressStatus>,
+            thread_controller: &ThreadController,
         ) -> WaitPeerResponse {
             WaitPeerResponse {
                 stream_id: stream_ids.0,
                 connexion_id: stream_ids.1.to_owned(),
                 response_channel,
                 progress_channel,
+                thread_controller: thread_controller.clone(),
             }
         }
         ///
@@ -702,8 +761,22 @@ mod response_builder {
                 .unwrap();
             self
         }
+        // TODO impl a max wait, impl a better error handling (distinction between Disconnected and
+        // server not responding)
         pub fn wait_response(&self) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
-            self.response_channel.recv()
+            while self.thread_controller.is_on() {
+                match self
+                    .response_channel
+                    .recv_timeout(Duration::from_millis(250))
+                {
+                    Ok(res) => return Ok(res),
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                        return Err(RecvError)
+                    }
+                };
+            }
+            Err(crossbeam::channel::RecvError)
         }
     }
     type MessageLen = usize;
@@ -1149,6 +1222,8 @@ mod response_manager_worker {
 
     use log::{debug, info, warn};
 
+    use crate::thread_controller::ThreadController;
+
     use self::{response_builder::PartialResponse, response_mngr::PartialResponseReceiver};
 
     use super::*;
@@ -1159,7 +1234,11 @@ mod response_manager_worker {
     /// Response queue pops the responseEvent from the server, partial_response_receiver is the
     /// channel that receives the partial responses for registration.
     ///
-    pub fn run(response_queue: ResponseQueue, partial_response_receiver: PartialResponseReceiver) {
+    pub fn run(
+        response_queue: ResponseQueue,
+        partial_response_receiver: PartialResponseReceiver,
+        thread_controller: &ThreadController,
+    ) {
         let partial_response_table =
             Arc::new(Mutex::new(HashMap::<(u64, String), PartialResponse>::new()));
         let partial_table_clone_0 = partial_response_table.clone();
@@ -1178,6 +1257,7 @@ mod response_manager_worker {
                     table_guard.remove(&(stream_id, conn_id.to_owned()));
                 }
             }
+            println!("ThreadController: response queue is ending !!");
         });
 
         std::thread::spawn(move || {
@@ -1188,6 +1268,7 @@ mod response_manager_worker {
 
                 table_guard.insert((stream_id, conn_id.to_owned()), partial_response_submission);
             }
+            println!("ThreadController: partial_response receiver  is ending !!");
         });
     }
 }
