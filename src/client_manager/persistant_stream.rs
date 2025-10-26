@@ -13,6 +13,7 @@ mod ping_emission {
     use crate::{
         client_manager::request_manager::{PingStatus, RequestHead},
         my_log,
+        thread_controller::{self, ThreadController},
     };
 
     pub struct PingEmissionControl {
@@ -38,13 +39,18 @@ mod ping_emission {
             request_sender: &RequestHead,
             stream_id: u64,
             waker: &Arc<Mutex<Option<Waker>>>,
+            thread_controller: &ThreadController,
         ) -> PingEmissionControl {
             let (sender, receiver) = crossbeam::channel::bounded(1);
 
             let request_sender = request_sender.clone();
             let waker = waker.clone();
+            let thread_controller = thread_controller.clone();
 
             std::thread::spawn(move || 'ping: loop {
+                if !thread_controller.is_on() {
+                    break 'ping;
+                };
                 // drain control queue if any event
                 match receiver.try_recv() {
                     Ok(control) => match control {

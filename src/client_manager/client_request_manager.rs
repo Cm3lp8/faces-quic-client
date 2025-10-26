@@ -178,6 +178,7 @@ mod client_request_mngr {
                                     &self.request_head,
                                     stream_id,
                                     &self.waker,
+                                    &self.thread_controller,
                                 );
                                 http3_request_builder.set_stream_ping_controller(ping_control);
                             }
