@@ -41,6 +41,7 @@ mod response_mngr {
         pub fn run(&self) {
             let guard = &mut *self.is_running.lock().unwrap();
             if !*guard {
+                println!("starting a new client !!");
                 response_manager_worker::run(
                     self.response_queue.clone(),
                     PartialResponseReceiver::new(
@@ -51,6 +52,10 @@ mod response_mngr {
                 );
                 *guard = true;
             }
+        }
+        pub fn stop(&self) {
+            let guard = &mut *self.is_running.lock().unwrap();
+            *guard = false;
         }
         // Get the handle to submit PartialResponse to the response manager.
         pub fn submitter(&self) -> PartialResponseSubmitter {

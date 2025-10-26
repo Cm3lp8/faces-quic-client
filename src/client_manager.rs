@@ -143,6 +143,7 @@ mod client_management {
         pub fn shutdown_client(&self) {
             println!("shutting down quic client !!!");
             self.thread_controller.switch_off();
+            self.request_manager.stop();
         }
         pub fn start_new_connection(&self) -> Result<(), ()> {
             std::thread::sleep(Duration::from_millis(350)); // this sleep is to wait for response

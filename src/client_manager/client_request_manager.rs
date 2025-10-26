@@ -81,6 +81,9 @@ mod client_request_mngr {
                 thread_controller: thread_controller.clone(),
             }
         }
+        pub fn stop(&self) {
+            self.response_manager.stop();
+        }
         pub fn rerun(&self) {
             self.response_manager.run();
         }
