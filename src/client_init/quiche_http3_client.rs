@@ -106,7 +106,10 @@ pub fn run(
             debug!("send() would block");
             continue;
         }
-        panic!("send() failed: {:?}", e);
+        // panic!("send() failed: {:?}", e);
+        //
+        println!("QUICHE CLIENT FAILURE [{:?}]", e);
+        return Ok(String::new());
     }
     let h3_config = quiche::h3::Config::new().unwrap();
 
@@ -693,7 +696,8 @@ fn handle_outgoing_packets(
                 break;
             }
             Err(e) => {
-                panic!("send() failed: {:?}", e);
+                println!("send() failed: {:?}", e);
+                break;
             }
         }
 
