@@ -2,6 +2,7 @@ use crossbeam::channel::Sender;
 use log::{debug, error, info, warn};
 //#[macro_use]
 use mio::{event::Event, Events, Poll, Token, Waker};
+use notify_rust::error::ErrorKind;
 use quiche::{
     h3::{self},
     Connection,
@@ -121,7 +122,16 @@ pub fn run(
     let mut bytes_re = 0;
 
     'main: loop {
-        poll.poll(&mut events, conn.timeout()).unwrap();
+        match poll.poll(&mut events, conn.timeout()) {
+            Ok(_) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                continue;
+            }
+            Err(e) => {
+                println!("serious error, break quiche client loop [{:?}] ", e);
+                break Err(());
+            }
+        }
         round += 1;
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
