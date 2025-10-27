@@ -1273,6 +1273,10 @@ mod response_manager_worker {
         let request_builder_table = request_builder_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
+                println!(
+                    "request builder table before : \n[{:#?}]",
+                    request_builder_table
+                );
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
