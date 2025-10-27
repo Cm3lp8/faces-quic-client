@@ -77,7 +77,7 @@ mod client_management {
                 response_channel: self.response_channel.clone(),
                 body_channel: self.body_channel.clone(),
                 request_manager: self.request_manager.clone(),
-                request_builder: Arc::new(Mutex::new(HashMap::new())),
+                request_builder: self.request_builder.clone(),
                 connexion_infos: self.connexion_infos.clone(),
                 http3_client: self.http3_client.clone(),
                 thread_controller: self.thread_controller.clone(),
