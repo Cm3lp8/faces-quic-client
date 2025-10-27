@@ -160,6 +160,7 @@ mod client_management {
         }
         pub fn down_stream(&self, path: &str, data: impl IntoBodyReq) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
+            println!("Created down stream with [{:?}]", reqbuild_uuid);
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
                 reqbuild_uuid,
@@ -176,7 +177,7 @@ mod client_management {
         }
 
         pub fn kill_stream(&self, stream_id: &StreamReqId) -> Result<(), ()> {
-            println!("in client kill stream 1 [{:?}", stream_id.get_id());
+            println!("in client kill stream 1 [{:?} []", stream_id.get_id());
             if let Some(entry) = self
                 .request_builder
                 .lock()
