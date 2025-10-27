@@ -611,7 +611,10 @@ mod request_builder {
         ) {
             self.event_subscriber.push(event_listener.clone());
         }
-        pub fn set_stream_ping_controller(&mut self, ping_controller: PingEmissionControl) {}
+        pub fn set_stream_ping_controller(&mut self, ping_controller: PingEmissionControl) {
+            println!("Ping controller [set]");
+            self.ping_emission_control = Some(ping_controller);
+        }
         pub fn get_long_connection_stream_id(&self) -> Option<u64> {
             self.long_connection_stream_id
         }
