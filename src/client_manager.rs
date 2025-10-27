@@ -176,12 +176,14 @@ mod client_management {
         }
 
         pub fn kill_stream(&self, stream_id: &StreamReqId) -> Result<(), ()> {
+            println!("in client kill stream 1 [{:?}", stream_id.get_id());
             if let Some(entry) = self
                 .request_builder
                 .lock()
                 .unwrap()
                 .get(&stream_id.get_id())
             {
+                println!("in client kill stream 2");
                 // stop ping emission emission thread associated with the long connection.
                 if let Some(ping_controller) = entry.get_stream_ping_controller() {
                     println!("has a get_stream_ping_controller");
