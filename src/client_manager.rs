@@ -184,6 +184,7 @@ mod client_management {
             {
                 // stop ping emission emission thread associated with the long connection.
                 if let Some(ping_controller) = entry.get_stream_ping_controller() {
+                    println!("has a get_stream_ping_controller");
                     ping_controller.stop_keepalive();
                 }
 
