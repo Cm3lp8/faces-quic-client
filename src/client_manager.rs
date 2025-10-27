@@ -185,7 +185,7 @@ mod client_management {
                 .request_builder
                 .lock()
                 .unwrap()
-                .get(&stream_id.get_id())
+                .remove(&stream_id.get_id())
             {
                 println!("in client kill stream 2");
                 // stop ping emission emission thread associated with the long connection.
@@ -350,9 +350,9 @@ mod client_management {
         pub fn send(&self) -> Result<WaitPeerResponse, ()> {
             let uuid = self.0;
 
-            if let Some(entry) = self.1.request_builder.lock().unwrap().get_mut(&uuid) {
+            if let Some(mut entry) = self.1.request_builder.lock().unwrap().remove(&uuid) {
                 my_log::debug("## HERE POST DATA locked ");
-                return self.1.request_manager.new_request_with_builder(entry);
+                return self.1.request_manager.new_request_with_builder(&mut entry);
             }
             Err(())
         }
