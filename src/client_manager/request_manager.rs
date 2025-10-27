@@ -529,6 +529,16 @@ mod request_builder {
         uuid: Uuid,
     }
 
+    impl Debug for Http3RequestBuilder {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                " Http3RequestBuilder = path [{:?}]   ,  uuid [{:?}]",
+                self.path, self.uuid
+            )
+        }
+    }
+
     impl Http3RequestBuilder {
         pub fn post_data(&mut self, path: String, data: Vec<u8>) -> &mut Self {
             self.post(path, RequestBody::new_data(data))

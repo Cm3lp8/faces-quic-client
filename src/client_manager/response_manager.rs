@@ -1282,9 +1282,11 @@ mod response_manager_worker {
                     entry_req_id = entry.get_request_id();
                 }
 
+                println!("request builder table : \n[{:#?}]", request_builder_table);
                 if delete_entry {
-                    debug!("Can delete [{stream_id}]");
+                    println!("Can delete [{stream_id}]");
                     table_guard.remove(&(stream_id, conn_id.to_owned()));
+
                     if let Some(_) = request_builder_table.lock().unwrap().remove(&entry_req_id) {
                         println!("Request terminated, successfully removed from request building table !! ");
                     } else {

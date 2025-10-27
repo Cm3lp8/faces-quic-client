@@ -203,6 +203,7 @@ mod stream_builder {
                     .request_manager
                     .request_manager_ref()
                     .new_stream_with_builder(entry, &self.keep_alive, cb);
+                println!("in OPen stream \n [{:#?}]", self.request_builder);
 
                 std::thread::spawn(move || {
                     if let Ok(response) = wait_response {

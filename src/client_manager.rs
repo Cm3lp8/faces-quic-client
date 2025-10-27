@@ -174,11 +174,13 @@ mod client_management {
                 .unwrap()
                 .entry(reqbuild_uuid)
                 .insert_entry(http3_request_builder);
+            println!("down stream table : \n [{:#?}]", self.request_builder);
             ReqBuilderOutput(reqbuild_uuid, self)
         }
 
         pub fn kill_stream(&self, stream_id: &StreamReqId) -> Result<(), ()> {
             println!("in client kill stream 1 [{:?} []", stream_id.get_id());
+            println!("in killstream \n [{:#?}]", self.request_builder);
             if let Some(entry) = self
                 .request_builder
                 .lock()
@@ -356,7 +358,7 @@ mod client_management {
         }
         pub fn stream(&self) -> StreamBuilder {
             let uuid = self.0;
-            my_log::debug("build STREAM BUILDER");
+            println!("build STREAM BUILDER");
             StreamBuilder::with_request_map(uuid, self.1.request_builder.clone(), self.1)
         }
         pub fn header(&self, name: &str, value: &str) -> &Self {
