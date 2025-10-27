@@ -7,14 +7,19 @@ pub use response_mngr::ResponseManager;
 
 mod response_mngr {
     use std::{
+        collections::HashMap,
         sync::{Arc, Mutex},
         thread::Thread,
         time::Duration,
     };
 
     use crossbeam::channel::RecvError;
+    use uuid::Uuid;
 
-    use crate::thread_controller::{self, ThreadController};
+    use crate::{
+        client_manager::request_manager::Http3RequestBuilder,
+        thread_controller::{self, ThreadController},
+    };
 
     use super::*;
 
@@ -26,14 +31,20 @@ mod response_mngr {
         ),
         is_running: Arc<Mutex<bool>>,
         thread_controller: ThreadController,
+        request_builder: Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
     }
     impl ResponseManager {
-        pub fn new(response_queue: ResponseQueue, thread_controller: &ThreadController) -> Self {
+        pub fn new(
+            response_queue: ResponseQueue,
+            thread_controller: &ThreadController,
+            request_builder: &Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
+        ) -> Self {
             Self {
                 response_queue,
                 partial_response_channel: crossbeam::channel::unbounded(),
                 is_running: Arc::new(Mutex::new(false)),
                 thread_controller: thread_controller.clone(),
+                request_builder: request_builder.clone(),
             }
         }
         ///
@@ -49,6 +60,7 @@ mod response_mngr {
                         &self.thread_controller,
                     ),
                     &self.thread_controller,
+                    &self.request_builder,
                 );
                 *guard = true;
             }
@@ -71,6 +83,7 @@ mod response_mngr {
                 is_running: self.is_running.clone(),
                 partial_response_channel: self.partial_response_channel.clone(),
                 thread_controller: self.thread_controller.clone(),
+                request_builder: self.request_builder.clone(),
             }
         }
     }
@@ -824,12 +837,13 @@ mod response_builder {
             req_path: &str,
             event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
             stream_ids: &(u64, String),
+            request_uuid: Uuid,
         ) -> (
             Self,
             crossbeam::channel::Receiver<CompletedResponse>,
             crossbeam::channel::Receiver<UploadProgressStatus>,
         ) {
-            let request_uuid = Uuid::new_v4();
+            //let request_uuid = Uuid::new_v4();
             let partial_response = Self {
                 stream_id: stream_ids.0,
                 connexion_id: stream_ids.1.to_owned(),
@@ -853,6 +867,9 @@ mod response_builder {
             let progress_receiver = partial_response.progress_channel.1.clone();
             (partial_response, response_receiver, progress_receiver)
         }
+        pub fn get_request_id(&self) -> Uuid {
+            self.request_uuid
+        }
         /// Create a new partial partial streamable response. It is a buffer type that keep track of the
         /// progression of the response.
         /// Create a UUid for this stream for event management purpose in the program that called
@@ -866,12 +883,13 @@ mod response_builder {
             event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
             stream_type: StreamSub,
             stream_ids: &(u64, String),
+            request_uuid: Uuid,
         ) -> (
             Self,
             crossbeam::channel::Receiver<CompletedResponse>,
             crossbeam::channel::Receiver<UploadProgressStatus>,
         ) {
-            let request_uuid = Uuid::new_v4();
+            //let request_uuid = Uuid::new_v4();
             let partial_response = Self {
                 stream_id: stream_ids.0,
                 connexion_id: stream_ids.1.to_owned(),
@@ -1226,8 +1244,11 @@ mod response_manager_worker {
     };
 
     use log::{debug, info, warn};
+    use uuid::Uuid;
 
-    use crate::thread_controller::ThreadController;
+    use crate::{
+        client_manager::request_manager::Http3RequestBuilder, thread_controller::ThreadController,
+    };
 
     use self::{response_builder::PartialResponse, response_mngr::PartialResponseReceiver};
 
@@ -1243,23 +1264,35 @@ mod response_manager_worker {
         response_queue: ResponseQueue,
         partial_response_receiver: PartialResponseReceiver,
         thread_controller: &ThreadController,
+        request_builder_table: &Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
     ) {
         let partial_response_table =
             Arc::new(Mutex::new(HashMap::<(u64, String), PartialResponse>::new()));
         let partial_table_clone_0 = partial_response_table.clone();
         let partial_table_clone_1 = partial_response_table.clone();
+        let request_builder_table = request_builder_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
+                let mut entry_req_id: Uuid = Uuid::nil();
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
                     delete_entry = entry.extend_data(server_response);
+                    entry_req_id = entry.get_request_id();
                 }
 
                 if delete_entry {
                     debug!("Can delete [{stream_id}]");
                     table_guard.remove(&(stream_id, conn_id.to_owned()));
+                    if let Some(_) = request_builder_table.lock().unwrap().remove(&entry_req_id) {
+                        println!("Request terminated, successfully removed from request building table !! ");
+                    } else {
+                        println!(
+                            "Request terminated but failed to remove request_ building data !
+                            "
+                        );
+                    }
                 }
             }
             println!("ThreadController: response queue is ending !!");

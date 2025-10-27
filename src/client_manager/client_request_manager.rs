@@ -2,6 +2,7 @@ pub use client_request_mngr::ClientRequestManager;
 
 mod client_request_mngr {
     use std::{
+        collections::HashMap,
         sync::{atomic::AtomicU64, Arc, Mutex},
         time::{Duration, Instant},
     };
@@ -64,9 +65,11 @@ mod client_request_mngr {
             connexion_infos: ConnexionInfos,
             http3_client: Arc<Http3Client>,
             thread_controller: &ThreadController,
+            request_builder: &Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
         ) -> Self {
             let resp_queue = response_queue.clone();
-            let response_manager = ResponseManager::new(resp_queue, thread_controller);
+            let response_manager =
+                ResponseManager::new(resp_queue, thread_controller, request_builder);
             response_manager.run();
 
             Self {
@@ -128,6 +131,7 @@ mod client_request_mngr {
             stream_cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static,
         ) -> Result<WaitPeerResponse, ()> {
             let path = http3_request_builder.get_path();
+            let req_id = http3_request_builder.req_uuid();
             my_log::debug("ici connexion ping");
             match http3_request_builder.build_down_stream(keep_alive) {
                 Ok((http3_request, event_subscriber, http3_confirm)) => {
@@ -216,6 +220,7 @@ mod client_request_mngr {
                                     event_subscriber,
                                     StreamSub::Downstream(stream_cb_syncable),
                                     &stream_ids,
+                                    req_id,
                                 );
 
                             let peer_response = WaitPeerResponse::new(
@@ -258,6 +263,7 @@ mod client_request_mngr {
             http3_request_builder: &mut Http3RequestBuilder,
         ) -> Result<WaitPeerResponse, ()> {
             let path = http3_request_builder.get_path();
+            let req_id = http3_request_builder.req_uuid();
             match http3_request_builder.build() {
                 Ok((http3_request, event_subscriber, http3_confirm)) => {
                     /*
@@ -321,6 +327,7 @@ mod client_request_mngr {
                                     path.unwrap().as_str(),
                                     event_subscriber,
                                     &stream_ids,
+                                    req_id,
                                 );
 
                             let peer_response = WaitPeerResponse::new(
@@ -373,6 +380,7 @@ mod client_request_mngr {
             );
             request_builder(&mut http3_request_builder);
 
+            let request_id = http3_request_builder.req_uuid();
             let path = http3_request_builder.get_path();
             match http3_request_builder.build() {
                 Ok((http3_request, event_subscriber, http3_confirm)) => {
@@ -436,6 +444,7 @@ mod client_request_mngr {
                                     path.unwrap().as_str(),
                                     event_subscriber,
                                     &stream_ids,
+                                    request_id,
                                 );
 
                             let peer_response = WaitPeerResponse::new(

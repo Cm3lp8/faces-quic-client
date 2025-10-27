@@ -122,6 +122,7 @@ mod client_management {
                 client_config.connexion_infos(),
                 http3_client_arc,
                 &thread_controller,
+                &request_builder,
             );
 
             Self {

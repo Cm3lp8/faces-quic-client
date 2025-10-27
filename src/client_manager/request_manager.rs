@@ -533,6 +533,9 @@ mod request_builder {
         pub fn post_data(&mut self, path: String, data: Vec<u8>) -> &mut Self {
             self.post(path, RequestBody::new_data(data))
         }
+        pub fn req_uuid(&self) -> Uuid {
+            self.uuid
+        }
         pub fn get_path(&self) -> Option<String> {
             if let Some(path) = self.path.as_ref() {
                 Some(path.to_string())
