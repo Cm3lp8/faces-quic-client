@@ -142,7 +142,6 @@ mod client_management {
         }
 
         pub fn shutdown_client(&self) {
-            println!("shutting down quic client !!!");
             self.thread_controller.switch_off();
             self.request_manager.stop();
         }
@@ -161,7 +160,6 @@ mod client_management {
         }
         pub fn down_stream(&self, path: &str, data: impl IntoBodyReq) -> ReqBuilderOutput {
             let reqbuild_uuid = uuid::Uuid::new_v4();
-            println!("Created down stream with [{:?}]", reqbuild_uuid);
             let mut http3_request_builder = Http3RequestPrep::new(
                 self.connexion_infos.get_peer_socket_address(),
                 reqbuild_uuid,
@@ -174,23 +172,18 @@ mod client_management {
                 .unwrap()
                 .entry(reqbuild_uuid)
                 .insert_entry(http3_request_builder);
-            println!("down stream table : \n [{:#?}]", self.request_builder);
             ReqBuilderOutput(reqbuild_uuid, self)
         }
 
         pub fn kill_stream(&self, stream_id: &StreamReqId) -> Result<(), ()> {
-            println!("in client kill stream 1 [{:?} []", stream_id.get_id());
-            println!("in killstream \n [{:#?}]", self.request_builder);
             if let Some(entry) = self
                 .request_builder
                 .lock()
                 .unwrap()
                 .remove(&stream_id.get_id())
             {
-                println!("in client kill stream 2");
                 // stop ping emission emission thread associated with the long connection.
                 if let Some(ping_controller) = entry.get_stream_ping_controller() {
-                    println!("has a get_stream_ping_controller");
                     ping_controller.stop_keepalive();
                 }
 
@@ -229,7 +222,6 @@ mod client_management {
             let content_type = data.content_type();
             my_log::debug("## HERE POST DATA ");
             let data = data.into_bytes();
-            println!("faces_quic_client = data posted size [{:?}]", data.len());
             http3_request_builder
                 .post_data(path.to_string(), data)
                 .set_content_type(content_type);
@@ -252,7 +244,6 @@ mod client_management {
             );
             let content_type = ContentType::OctetStream;
             my_log::debug("## HERE POST DATA ");
-            println!("faces_quic_client = data posted size [{:?}]", data.len());
             http3_request_builder
                 .post_data(path.to_string(), data)
                 .set_content_type(content_type);
@@ -351,14 +342,12 @@ mod client_management {
             let uuid = self.0;
 
             if let Some(mut entry) = self.1.request_builder.lock().unwrap().remove(&uuid) {
-                my_log::debug("## HERE POST DATA locked ");
                 return self.1.request_manager.new_request_with_builder(&mut entry);
             }
             Err(())
         }
         pub fn stream(&self) -> StreamBuilder {
             let uuid = self.0;
-            println!("build STREAM BUILDER");
             StreamBuilder::with_request_map(uuid, self.1.request_builder.clone(), self.1)
         }
         pub fn header(&self, name: &str, value: &str) -> &Self {

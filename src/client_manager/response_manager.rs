@@ -1270,35 +1270,17 @@ mod response_manager_worker {
             Arc::new(Mutex::new(HashMap::<(u64, String), PartialResponse>::new()));
         let partial_table_clone_0 = partial_response_table.clone();
         let partial_table_clone_1 = partial_response_table.clone();
-        let request_builder_table = request_builder_table.clone();
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
-                println!(
-                    "request builder table before : \n[{:#?}]",
-                    request_builder_table
-                );
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
                 let mut delete_entry = false;
-                let mut entry_req_id: Uuid = Uuid::nil();
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
                     delete_entry = entry.extend_data(server_response);
-                    entry_req_id = entry.get_request_id();
                 }
 
-                println!("request builder table : \n[{:#?}]", request_builder_table);
                 if delete_entry {
-                    println!("Can delete [{stream_id}]");
                     table_guard.remove(&(stream_id, conn_id.to_owned()));
-
-                    if let Some(_) = request_builder_table.lock().unwrap().remove(&entry_req_id) {
-                        println!("Request terminated, successfully removed from request building table !! ");
-                    } else {
-                        println!(
-                            "Request terminated but failed to remove request_ building data !
-                            "
-                        );
-                    }
                 }
             }
             println!("ThreadController: response queue is ending !!");

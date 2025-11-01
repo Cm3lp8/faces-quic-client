@@ -55,7 +55,6 @@ mod ping_emission {
                 match receiver.try_recv() {
                     Ok(control) => match control {
                         PingControlKind::StopKeepAlive => {
-                            println!("Stream keep alive stopped");
                             break 'ping;
                         }
                         PingControlKind::Continue => {}
@@ -212,7 +211,6 @@ mod stream_builder {
                     }
                 });
             };
-            println!("in OPen stream \n [{:#?}]", self.request_builder);
 
             StreamReqId::new(uuid)
         }
