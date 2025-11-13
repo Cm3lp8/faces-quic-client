@@ -11,7 +11,8 @@ pub use request_manager::{
     RequestEventListener, RequestQueue,
 };
 pub use response_manager::{
-    Http3Response, ReqStatus, ResponseChannel, ResponseHead, ResponseQueue, UploadProgressStatus,
+    CompletedResponse, Http3Response, ReqStatus, ResponseChannel, ResponseHead, ResponseQueue,
+    UploadProgressStatus, WaitPeerResponse,
 };
 
 pub use super::client_config::ConnexionInfos;

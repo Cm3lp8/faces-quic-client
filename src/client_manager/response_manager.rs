@@ -1,7 +1,8 @@
 pub use queue_builder::{ResponseChannel, ResponseHead, ResponseQueue};
 pub use response_builder::PartialResponse;
 pub use response_builder::{
-    DownloadProgressStatus, Http3Response, ReqStatus, UploadProgressStatus, WaitPeerResponse,
+    CompletedResponse, DownloadProgressStatus, Http3Response, ReqStatus, UploadProgressStatus,
+    WaitPeerResponse,
 };
 pub use response_mngr::ResponseManager;
 
