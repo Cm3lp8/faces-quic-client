@@ -198,7 +198,7 @@ mod stream_builder {
         }
 
         pub fn open(
-            self,
+            &self,
             cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static,
         ) -> StreamReqId {
             let uuid = self.uuid;
