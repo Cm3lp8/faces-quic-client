@@ -151,6 +151,7 @@ mod event_stream_types {
 mod stream_builder {
     use std::{
         collections::HashMap,
+        fmt::{write, Debug},
         sync::{Arc, Mutex},
     };
 
@@ -168,6 +169,7 @@ mod stream_builder {
         request_builder: Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
         request_manager: Http3ClientManager,
         keep_alive: Option<KeepAlive>,
+        on_failure_cb: Arc<Mutex<Option<Box<dyn FnOnce(usize) + Send + 'static>>>>,
     }
 
     impl StreamBuilder {
@@ -181,42 +183,82 @@ mod stream_builder {
                 request_builder,
                 request_manager: request_manager.clone(),
                 keep_alive: None,
+                on_failure_cb: Arc::new(Mutex::new(None)),
             }
         }
 
+        /// freq in seconds
         pub fn keep_alive(&mut self, freq_as_sec: u64) -> &mut Self {
             self.keep_alive = Some(KeepAlive::new(freq_as_sec));
             self
         }
+        pub fn on_failure_cb(&mut self, cb: impl FnOnce(usize) + Send + 'static) -> &mut Self {
+            *self.on_failure_cb.lock().unwrap() = Some(Box::new(cb));
+            self
+        }
 
         pub fn open(
-            &self,
+            self,
             cb: impl Fn(StreamEvent, StreamControlFlow) + Send + Sync + 'static,
         ) -> StreamReqId {
             let uuid = self.uuid;
 
             my_log::log("Stream_opening");
 
+            let stream_req_id = StreamReqId::new(uuid);
+
+            // TODO find a better way to create the stream, that doesn't keep the lock
             if let Some(entry) = self.request_builder.lock().unwrap().get_mut(&uuid) {
                 let wait_response = self
                     .request_manager
                     .request_manager_ref()
                     .new_stream_with_builder(entry, &self.keep_alive, cb);
 
+                let failure_cb = self.on_failure_cb.clone();
                 std::thread::spawn(move || {
                     if let Ok(response) = wait_response {
                         if let Ok(res) = response.wait_response() {
+                            if let Some(status_code) = res.status_code() {
+                                match &status_code[..] {
+                                    b"200" => {}
+                                    b"401" => {
+                                        execute_failure_cb_if_any(failure_cb, 401);
+                                    }
+                                    b"503" => {
+                                        execute_failure_cb_if_any(failure_cb, 503);
+                                    }
+                                    b"404" => {
+                                        execute_failure_cb_if_any(failure_cb, 404);
+                                    }
+                                    _other => {
+                                        execute_failure_cb_if_any(failure_cb, 0);
+                                    }
+                                }
+                            }
                             my_log::debug(String::from_utf8(res.status_code().unwrap().to_vec()));
                         }
                     }
                 });
             };
-
-            StreamReqId::new(uuid)
+            stream_req_id
         }
     }
 
-    #[derive(Debug, Clone)]
+    fn execute_failure_cb_if_any(
+        cb: Arc<Mutex<Option<Box<dyn FnOnce(usize) + Send + 'static>>>>,
+        error_code: usize,
+    ) {
+        let mut cb_opt = {
+            let guard = &mut *cb.lock().unwrap();
+            guard.take()
+        };
+
+        match cb_opt {
+            Some(cb) => cb(error_code),
+            _ => {}
+        }
+    }
+    #[derive(Clone)]
     pub struct StreamReqId {
         uuid: Uuid,
     }
