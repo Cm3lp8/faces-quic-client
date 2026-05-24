@@ -2,7 +2,10 @@ mod quiche_http3_client;
 pub use http3_client::Http3Client;
 
 mod http3_client {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use mio::Waker;
 
@@ -86,7 +89,13 @@ mod http3_client {
                     *connexion_opened.lock().unwrap() = false;
                 };
             });
-            confirm_connexion_chan.1.recv()
+            confirm_connexion_chan
+                .1
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|_| {
+                    log::info!("[faces_diag][quic_client] connect confirmation timeout after 10s");
+                    crossbeam::channel::RecvError
+                })
         }
     }
 }
