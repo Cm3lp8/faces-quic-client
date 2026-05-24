@@ -226,7 +226,7 @@ mod response_builder {
     use std::{
         fmt::{Debug, Display},
         sync::Arc,
-        time::{Duration, Instant},
+        time::Duration,
         usize,
     };
 

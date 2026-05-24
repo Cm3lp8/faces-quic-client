@@ -164,10 +164,18 @@ mod client_request_mngr {
                             _ => {}
                         }
                     }
-                    // Once the stream has been created, we received it back from client quiche
-                    // loop;
-                    let stream_ids = http3_confirm.unwrap().wait_stream_ids();
-                    let stream_id = stream_ids.as_ref().unwrap().0;
+                    // Once the stream has been created, we receive it back from the client loop.
+                    let stream_ids = match http3_confirm.unwrap().wait_stream_ids() {
+                        Ok(stream_ids) => stream_ids,
+                        Err(e) => {
+                            warn!(
+                                "[faces_diag][quic_client] wait_stream_ids failed path={:?} request_id={} [{:?}]",
+                                path, req_id, e
+                            );
+                            return Err(());
+                        }
+                    };
+                    let stream_id = stream_ids.0;
 
                     self.stream_id_counter
                         .store(stream_id, std::sync::atomic::Ordering::Relaxed);
@@ -208,35 +216,28 @@ mod client_request_mngr {
 
                     let thread_controller = self.thread_controller.clone();
                     std::thread::spawn(move || {
-                        /*
-                         *
-                         * wait here the stream_id with the response confirm
-                         *
-                         * */
-                        if let Ok(stream_ids) = stream_ids {
-                            let (partial_response, completed_channel, progress_channel) =
-                                PartialResponse::new_streamable(
-                                    path.unwrap().as_str(),
-                                    event_subscriber,
-                                    StreamSub::Downstream(stream_cb_syncable),
-                                    &stream_ids,
-                                    req_id,
-                                );
-
-                            let peer_response = WaitPeerResponse::new(
+                        let (partial_response, completed_channel, progress_channel) =
+                            PartialResponse::new_streamable(
+                                path.unwrap().as_str(),
+                                event_subscriber,
+                                StreamSub::Downstream(stream_cb_syncable),
                                 &stream_ids,
-                                completed_channel,
-                                progress_channel,
-                                &thread_controller,
+                                req_id,
                             );
-                            if let Err(e) = response_sender.send(peer_response) {
-                                println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
-                            }
 
-                            //send partial response to the reponse manager
-                            if let Err(e) = response_manager_submission.submit(partial_response) {
-                                println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
-                            }
+                        let peer_response = WaitPeerResponse::new(
+                            &stream_ids,
+                            completed_channel,
+                            progress_channel,
+                            &thread_controller,
+                        );
+                        if let Err(e) = response_sender.send(peer_response) {
+                            println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
+                        }
+
+                        //send partial response to the reponse manager
+                        if let Err(e) = response_manager_submission.submit(partial_response) {
+                            println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
                         }
 
                         /*
@@ -294,8 +295,17 @@ mod client_request_mngr {
                             _ => {}
                         }
                     }
-                    let stream_ids = http3_confirm.unwrap().wait_stream_ids();
-                    let stream_id = stream_ids.as_ref().unwrap().0;
+                    let stream_ids = match http3_confirm.unwrap().wait_stream_ids() {
+                        Ok(stream_ids) => stream_ids,
+                        Err(e) => {
+                            warn!(
+                                "[faces_diag][quic_client] wait_stream_ids failed path={:?} request_id={} [{:?}]",
+                                path, req_id, e
+                            );
+                            return Err(());
+                        }
+                    };
+                    let stream_id = stream_ids.0;
                     self.stream_id_counter
                         .store(stream_id, std::sync::atomic::Ordering::Relaxed);
 
@@ -316,34 +326,27 @@ mod client_request_mngr {
 
                     let thread_controller = self.thread_controller.clone();
                     std::thread::spawn(move || {
-                        /*
-                         *
-                         * wait here the stream_id with the response confirm
-                         *
-                         * */
-                        if let Ok(stream_ids) = stream_ids {
-                            let (partial_response, completed_channel, progress_channel) =
-                                PartialResponse::new(
-                                    path.unwrap().as_str(),
-                                    event_subscriber,
-                                    &stream_ids,
-                                    req_id,
-                                );
-
-                            let peer_response = WaitPeerResponse::new(
+                        let (partial_response, completed_channel, progress_channel) =
+                            PartialResponse::new(
+                                path.unwrap().as_str(),
+                                event_subscriber,
                                 &stream_ids,
-                                completed_channel,
-                                progress_channel,
-                                &thread_controller,
+                                req_id,
                             );
-                            if let Err(e) = response_sender.send(peer_response) {
-                                println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
-                            }
 
-                            //send partial response to the reponse manager
-                            if let Err(e) = response_manager_submission.submit(partial_response) {
-                                println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
-                            }
+                        let peer_response = WaitPeerResponse::new(
+                            &stream_ids,
+                            completed_channel,
+                            progress_channel,
+                            &thread_controller,
+                        );
+                        if let Err(e) = response_sender.send(peer_response) {
+                            println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
+                        }
+
+                        //send partial response to the reponse manager
+                        if let Err(e) = response_manager_submission.submit(partial_response) {
+                            println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
                         }
 
                         /*
@@ -412,8 +415,17 @@ mod client_request_mngr {
                             _ => {}
                         }
                     }
-                    let stream_ids = http3_confirm.unwrap().wait_stream_ids();
-                    let stream_id = stream_ids.as_ref().unwrap().0;
+                    let stream_ids = match http3_confirm.unwrap().wait_stream_ids() {
+                        Ok(stream_ids) => stream_ids,
+                        Err(e) => {
+                            warn!(
+                                "[faces_diag][quic_client] wait_stream_ids failed path={:?} request_id={} [{:?}]",
+                                path, request_id, e
+                            );
+                            return Err(());
+                        }
+                    };
+                    let stream_id = stream_ids.0;
                     self.stream_id_counter
                         .store(stream_id, std::sync::atomic::Ordering::Relaxed);
 
@@ -433,34 +445,27 @@ mod client_request_mngr {
 
                     let thread_controller = self.thread_controller.clone();
                     std::thread::spawn(move || {
-                        /*
-                         *
-                         * wait here the stream_id with the response confirm
-                         *
-                         * */
-                        if let Ok(stream_ids) = stream_ids {
-                            let (partial_response, completed_channel, progress_channel) =
-                                PartialResponse::new(
-                                    path.unwrap().as_str(),
-                                    event_subscriber,
-                                    &stream_ids,
-                                    request_id,
-                                );
-
-                            let peer_response = WaitPeerResponse::new(
+                        let (partial_response, completed_channel, progress_channel) =
+                            PartialResponse::new(
+                                path.unwrap().as_str(),
+                                event_subscriber,
                                 &stream_ids,
-                                completed_channel,
-                                progress_channel,
-                                &thread_controller,
+                                request_id,
                             );
-                            if let Err(e) = response_sender.send(peer_response) {
-                                println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
-                            }
 
-                            //send partial response to the reponse manager
-                            if let Err(e) = response_manager_submission.submit(partial_response) {
-                                println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
-                            }
+                        let peer_response = WaitPeerResponse::new(
+                            &stream_ids,
+                            completed_channel,
+                            progress_channel,
+                            &thread_controller,
+                        );
+                        if let Err(e) = response_sender.send(peer_response) {
+                            println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
+                        }
+
+                        //send partial response to the reponse manager
+                        if let Err(e) = response_manager_submission.submit(partial_response) {
+                            println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
                         }
 
                         /*

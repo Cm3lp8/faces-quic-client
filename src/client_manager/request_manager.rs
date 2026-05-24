@@ -278,7 +278,10 @@ mod request_builder {
         ///ids are : stream_id(u64) and connexion id (string)
         ///
         pub fn wait_stream_ids(&self) -> Result<(u64, String), crossbeam::channel::RecvError> {
-            self.response.recv()
+            match self.response.recv_timeout(Duration::from_secs(3)) {
+                Ok(stream_ids) => Ok(stream_ids),
+                Err(_) => Err(crossbeam::channel::RecvError),
+            }
         }
     }
     ///
