@@ -50,6 +50,9 @@ mod http3_client {
         pub fn is_off(&self) -> bool {
             !*self.connexion_opened.lock().unwrap()
         }
+        pub fn mark_disconnected(&self) {
+            *self.connexion_opened.lock().unwrap() = false;
+        }
         ///
         ///Block and wait for the connexion making.
         ///return the connexion id String.
@@ -78,15 +81,20 @@ mod http3_client {
 
             let thread_controller = self.thread_controller.clone();
             std::thread::spawn(move || {
-                if let Ok(finished) = quiche_http3_client::run(
+                let result = quiche_http3_client::run(
                     configuration_clone,
                     req_queue,
                     resp_head,
                     body_queue,
                     confirmation_sender,
                     &thread_controller,
-                ) {
-                    *connexion_opened.lock().unwrap() = false;
+                );
+                *connexion_opened.lock().unwrap() = false;
+                if let Err(e) = result {
+                    log::info!(
+                        "[faces_diag][quic_client] client loop ended with error [{:?}]",
+                        e
+                    );
                 };
             });
             confirm_connexion_chan

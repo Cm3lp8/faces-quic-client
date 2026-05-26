@@ -143,6 +143,7 @@ mod client_management {
         }
 
         pub fn shutdown_client(&self) {
+            self.http3_client.mark_disconnected();
             self.thread_controller.switch_off();
             self.request_manager.stop();
         }
