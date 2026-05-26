@@ -170,6 +170,7 @@ mod stream_builder {
         request_manager: Http3ClientManager,
         keep_alive: Option<KeepAlive>,
         on_failure_cb: Arc<Mutex<Option<Box<dyn FnOnce(usize) + Send + 'static>>>>,
+        on_open_cb: Arc<Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>>,
     }
 
     impl StreamBuilder {
@@ -184,6 +185,7 @@ mod stream_builder {
                 request_manager: request_manager.clone(),
                 keep_alive: None,
                 on_failure_cb: Arc::new(Mutex::new(None)),
+                on_open_cb: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -194,6 +196,10 @@ mod stream_builder {
         }
         pub fn on_failure_cb(&mut self, cb: impl FnOnce(usize) + Send + 'static) -> &mut Self {
             *self.on_failure_cb.lock().unwrap() = Some(Box::new(cb));
+            self
+        }
+        pub fn on_open_cb(&mut self, cb: impl FnOnce() + Send + 'static) -> &mut Self {
+            *self.on_open_cb.lock().unwrap() = Some(Box::new(cb));
             self
         }
 
@@ -215,33 +221,39 @@ mod stream_builder {
                     .new_stream_with_builder(entry, &self.keep_alive, cb);
 
                 let failure_cb = self.on_failure_cb.clone();
+                let open_cb = self.on_open_cb.clone();
                 let request_manager = self.request_manager.clone();
                 std::thread::spawn(move || match wait_response {
-                    Ok(response) => match response.wait_response() {
-                        Ok(res) => {
-                            if let Some(status_code) = res.status_code() {
-                                match &status_code[..] {
-                                    b"200" => {}
-                                    b"401" => execute_failure_cb_if_any(failure_cb, 401),
-                                    b"503" => execute_failure_cb_if_any(failure_cb, 503),
-                                    b"404" => execute_failure_cb_if_any(failure_cb, 404),
-                                    _other => execute_failure_cb_if_any(failure_cb, 0),
+                    Ok(response) => {
+                        execute_open_cb_if_any(open_cb);
+                        match response.wait_response() {
+                            Ok(res) => {
+                                if let Some(status_code) = res.status_code() {
+                                    match &status_code[..] {
+                                        b"200" => {}
+                                        b"401" => execute_failure_cb_if_any(failure_cb, 401),
+                                        b"503" => execute_failure_cb_if_any(failure_cb, 503),
+                                        b"404" => execute_failure_cb_if_any(failure_cb, 404),
+                                        _other => execute_failure_cb_if_any(failure_cb, 0),
+                                    }
+                                    my_log::debug(
+                                        String::from_utf8_lossy(&status_code).to_string(),
+                                    );
+                                } else {
+                                    my_log::debug("stream response without status code");
+                                    execute_failure_cb_if_any(failure_cb, 0);
                                 }
-                                my_log::debug(String::from_utf8_lossy(&status_code).to_string());
-                            } else {
-                                my_log::debug("stream response without status code");
-                                execute_failure_cb_if_any(failure_cb, 0);
+                            }
+                            Err(e) => {
+                                my_log::debug(format!("stream wait_response failure [{:?}]", e));
+                                if request_manager.is_off() {
+                                    execute_failure_cb_if_any(failure_cb, 0);
+                                } else {
+                                    my_log::debug("stream wait_response timeout ignored while client is still connected");
+                                }
                             }
                         }
-                        Err(e) => {
-                            my_log::debug(format!("stream wait_response failure [{:?}]", e));
-                            if request_manager.is_off() {
-                                execute_failure_cb_if_any(failure_cb, 0);
-                            } else {
-                                my_log::debug("stream wait_response timeout ignored while client is still connected");
-                            }
-                        }
-                    },
+                    }
                     Err(e) => {
                         my_log::debug(format!("stream opening failure [{:?}]", e));
                         execute_failure_cb_if_any(failure_cb, 0);
@@ -249,6 +261,17 @@ mod stream_builder {
                 });
             };
             stream_req_id
+        }
+    }
+
+    fn execute_open_cb_if_any(cb: Arc<Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>>) {
+        let cb_opt = {
+            let guard = &mut *cb.lock().unwrap();
+            guard.take()
+        };
+
+        if let Some(cb) = cb_opt {
+            cb();
         }
     }
 

@@ -337,36 +337,46 @@ pub fn run(
                             }
                         }
                         Http3Request::CloseStream { stream_id } => {
-                            if !conn.stream_writable(stream_id, 512).unwrap() {
-                                pending_bodies.entry(stream_id).or_default().push((
-                                    vec![],
-                                    adjust_send_timer,
-                                    true,
-                                ));
-                                pending_count += 1;
-                            //      continue 'main;
-                            } else {
-                                match h3_conn.send_body(&mut conn, stream_id, &[], true) {
-                                    Ok(v) => {
-                                        println!(
-                                            "Send stream close message for stream_id [{:?}]",
-                                            stream_id
-                                        );
-                                        bodies_send += 1;
-                                        h3_byte_written += v;
+                            match conn.stream_writable(stream_id, 512) {
+                                Ok(false) => {
+                                    pending_bodies.entry(stream_id).or_default().push((
+                                        vec![],
+                                        adjust_send_timer,
+                                        true,
+                                    ));
+                                    pending_count += 1;
+                                }
+                                Ok(true) => {
+                                    match h3_conn.send_body(&mut conn, stream_id, &[], true) {
+                                        Ok(v) => {
+                                            println!(
+                                                "Send stream close message for stream_id [{:?}]",
+                                                stream_id
+                                            );
+                                            bodies_send += 1;
+                                            h3_byte_written += v;
 
-                                        if let Ok(e) = adjust_send_timer.send(Instant::now()) {}
+                                            if let Ok(_) = adjust_send_timer.send(Instant::now()) {}
+                                        }
+                                        Err(quiche::h3::Error::StreamBlocked) => {
+                                            error!("StreamBlocked !!")
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "Error : Failed to send close stream request [{}], packet [{:?}]",
+                                                stream_id,
+                                                e
+                                            );
+                                        }
                                     }
-                                    Err(quiche::h3::Error::StreamBlocked) => {
-                                        error!("StreamBlocked !!")
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                    "Error : Failed to send body request [{}], packet [{}] ",
-                                    stream_id,
-                                    e
-                                );
-                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "[faces_diag][quic_client] close_stream_invalid_state stream_id={} error={:?}",
+                                        stream_id,
+                                        e
+                                    );
+                                    let _ = adjust_send_timer.send(Instant::now());
                                 }
                             }
                         }
@@ -383,84 +393,85 @@ pub fn run(
                             }
                         }
                         Http3Request::Body(mut body_req) => {
-                            if !conn.stream_writable(body_req.stream_id(), 512).unwrap() {
-                                pending_bodies
-                                    .entry(body_req.stream_id())
-                                    .or_default()
-                                    .push((
+                            let body_stream_id = body_req.stream_id();
+                            match conn.stream_writable(body_stream_id, 512) {
+                                Ok(false) => {
+                                    pending_bodies.entry(body_stream_id).or_default().push((
                                         body_req.take_data(),
                                         adjust_send_timer,
                                         body_req.is_end(),
                                     ));
-                                pending_count += 1;
-                            //      continue 'main;
-                            } else {
-                                match h3_conn.send_body(
-                                    &mut conn,
-                                    body_req.stream_id(),
-                                    body_req.data(),
-                                    body_req.is_end(),
-                                ) {
-                                    Ok(v) => {
-                                        bodies_send += 1;
-                                        h3_byte_written += v;
-                                        if v < body_req.len() {
-                                            lost += body_req.len() - v;
-                                            debug!("lost total [{}]", lost);
-                                            pending_bodies
-                                                .entry(body_req.stream_id())
-                                                .or_default()
-                                                .push((
-                                                    body_req.data()[v..].to_vec(),
-                                                    adjust_send_timer,
-                                                    body_req.is_end(),
-                                                ));
-                                            pending_count += 1;
-                                            continue 'main;
-                                        }
-                                        if let Ok(_) = adjust_send_timer.send(Instant::now()) {};
-                                        if !body_req.is_end() {
-                                            let _ = waker_1.wake();
-                                        }
-
-                                        if body_req.is_end() {
-                                            debug!(
-                                                " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_req.stream_id(),
-                                                h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
-                                            );
-                                            println!(
-                                                " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_req.stream_id(),
-                                                h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
-                                            );
-
-                                            for i in pending_bodies.iter() {
-                                                debug!("[{:?}]", i)
+                                    pending_count += 1;
+                                }
+                                Ok(true) => {
+                                    match h3_conn.send_body(
+                                        &mut conn,
+                                        body_stream_id,
+                                        body_req.data(),
+                                        body_req.is_end(),
+                                    ) {
+                                        Ok(v) => {
+                                            bodies_send += 1;
+                                            h3_byte_written += v;
+                                            if v < body_req.len() {
+                                                lost += body_req.len() - v;
+                                                debug!("lost total [{}]", lost);
+                                                pending_bodies
+                                                    .entry(body_stream_id)
+                                                    .or_default()
+                                                    .push((
+                                                        body_req.data()[v..].to_vec(),
+                                                        adjust_send_timer,
+                                                        body_req.is_end(),
+                                                    ));
+                                                pending_count += 1;
+                                                continue 'main;
                                             }
+                                            if let Ok(_) = adjust_send_timer.send(Instant::now()) {
+                                            };
+                                            if !body_req.is_end() {
+                                                let _ = waker_1.wake();
+                                            }
+
+                                            if body_req.is_end() {
+                                                debug!(
+                                                    " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_stream_id,
+                                                    h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
+                                                );
+                                                println!(
+                                                    " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_stream_id,
+                                                    h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
+                                                );
+
+                                                for i in pending_bodies.iter() {
+                                                    debug!("[{:?}]", i)
+                                                }
+                                            }
+                                            if let Ok(_) = adjust_send_timer.send(Instant::now()) {}
                                         }
-                                        if let Ok(e) = adjust_send_timer.send(Instant::now()) {}
+                                        Err(quiche::h3::Error::StreamBlocked) => {
+                                            error!("StreamBlocked !!")
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "Error : Failed to send body request [{}], packet [{}] {:?}",
+                                                body_stream_id,
+                                                body_req.packet_id(),
+                                                e
+                                            );
+                                        }
                                     }
-                                    Err(quiche::h3::Error::StreamBlocked) => {
-                                        error!("StreamBlocked !!")
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                    "Error : Failed to send body request [{}], packet [{}] {:?}",
-                                    body_req.stream_id(),
-                                    body_req.packet_id(),
-                                    e
-                                );
-                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "[faces_diag][quic_client] body_stream_invalid_state stream_id={} packet={} error={:?}",
+                                        body_stream_id,
+                                        body_req.packet_id(),
+                                        e
+                                    );
+                                    let _ = adjust_send_timer.send(Instant::now());
                                 }
                             }
-                            /*
-                            if let Ok(can_write) =
-                                conn.stream_writable(body_req.stream_id(), body_req.len())
-                            {
-                                h3_bytes_given += body_req.len();
-                                if !can_write {
-                                } else {
-                                }
-                            }*/
                         }
 
                         Http3Request::BodyFromFile => {}
