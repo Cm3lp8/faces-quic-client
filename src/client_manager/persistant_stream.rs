@@ -215,28 +215,36 @@ mod stream_builder {
                     .new_stream_with_builder(entry, &self.keep_alive, cb);
 
                 let failure_cb = self.on_failure_cb.clone();
-                std::thread::spawn(move || {
-                    if let Ok(response) = wait_response {
-                        if let Ok(res) = response.wait_response() {
+                let request_manager = self.request_manager.clone();
+                std::thread::spawn(move || match wait_response {
+                    Ok(response) => match response.wait_response() {
+                        Ok(res) => {
                             if let Some(status_code) = res.status_code() {
                                 match &status_code[..] {
                                     b"200" => {}
-                                    b"401" => {
-                                        execute_failure_cb_if_any(failure_cb, 401);
-                                    }
-                                    b"503" => {
-                                        execute_failure_cb_if_any(failure_cb, 503);
-                                    }
-                                    b"404" => {
-                                        execute_failure_cb_if_any(failure_cb, 404);
-                                    }
-                                    _other => {
-                                        execute_failure_cb_if_any(failure_cb, 0);
-                                    }
+                                    b"401" => execute_failure_cb_if_any(failure_cb, 401),
+                                    b"503" => execute_failure_cb_if_any(failure_cb, 503),
+                                    b"404" => execute_failure_cb_if_any(failure_cb, 404),
+                                    _other => execute_failure_cb_if_any(failure_cb, 0),
                                 }
+                                my_log::debug(String::from_utf8_lossy(&status_code).to_string());
+                            } else {
+                                my_log::debug("stream response without status code");
+                                execute_failure_cb_if_any(failure_cb, 0);
                             }
-                            my_log::debug(String::from_utf8(res.status_code().unwrap().to_vec()));
                         }
+                        Err(e) => {
+                            my_log::debug(format!("stream wait_response failure [{:?}]", e));
+                            if request_manager.is_off() {
+                                execute_failure_cb_if_any(failure_cb, 0);
+                            } else {
+                                my_log::debug("stream wait_response timeout ignored while client is still connected");
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        my_log::debug(format!("stream opening failure [{:?}]", e));
+                        execute_failure_cb_if_any(failure_cb, 0);
                     }
                 });
             };

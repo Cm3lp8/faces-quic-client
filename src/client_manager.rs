@@ -156,6 +156,9 @@ mod client_management {
             self.request_manager.rerun();
             Ok(())
         }
+        pub fn is_off(&self) -> bool {
+            self.http3_client.is_off()
+        }
 
         pub fn request_manager_ref(&self) -> &ClientRequestManager {
             &self.request_manager
