@@ -24,6 +24,7 @@ use crate::{
 const MAX_DATAGRAM_SIZE: usize = 1350;
 const WAKER_TOKEN: Token = Token(1);
 const WAKER_TOKEN_1: Token = Token(2);
+const STALE_CONNECTION_RX_TIMEOUT: Duration = Duration::from_secs(25);
 pub fn run(
     client_config: Arc<ClientConfig>,
     request_queue: RequestQueue,
@@ -55,6 +56,7 @@ pub fn run(
     // the event loop.
     let mut socket = mio::net::UdpSocket::bind(bind_addr).unwrap();
     let mut last_instant: Option<Instant> = None;
+    let mut last_valid_rx = Instant::now();
 
     let mut waker = Some(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
 
@@ -172,7 +174,10 @@ pub fn run(
             };
             // Process potentially coalesced packets.
             let _read = match conn.recv(&mut buf[..len], recv_info) {
-                Ok(v) => v,
+                Ok(v) => {
+                    last_valid_rx = Instant::now();
+                    v
+                }
                 Err(e) => {
                     error!("recv failed: {:?}", e);
                     continue 'read;
@@ -181,6 +186,16 @@ pub fn run(
         }
         if conn.is_closed() {
             break Ok(conn.trace_id().to_owned());
+        }
+        if conn.is_established() && last_valid_rx.elapsed() > STALE_CONNECTION_RX_TIMEOUT {
+            warn!(
+                "[faces_diag][quic_client] stale_connection_rx_timeout connexion_id={} elapsed_ms={} threshold_ms={}",
+                conn.trace_id(),
+                last_valid_rx.elapsed().as_millis(),
+                STALE_CONNECTION_RX_TIMEOUT.as_millis()
+            );
+            let _ = conn.close(false, 0x1, b"stale_rx_timeout");
+            break Err(());
         }
         // Create a new HTTP/3 connection once the QUIC connection is established.
         if conn.is_established() && http3_conn.is_none() {
