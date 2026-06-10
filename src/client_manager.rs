@@ -156,6 +156,15 @@ mod client_management {
             self.request_manager.rerun();
             Ok(())
         }
+        pub fn preconnect(&self, reason: &str) -> Result<(), ()> {
+            info!(
+                "[faces_diag][quic_client][preconnect] manager_start reason={}",
+                reason
+            );
+            self.thread_controller.switch_on();
+            self.request_manager.rerun();
+            self.request_manager.preconnect(reason)
+        }
         pub fn is_off(&self) -> bool {
             self.http3_client.is_off()
         }

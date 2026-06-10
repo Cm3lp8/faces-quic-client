@@ -201,6 +201,38 @@ mod queue_builder {
                 None
             }
         }
+
+        pub fn drain_stale(&self, reason: &str) -> usize {
+            let started_at = Instant::now();
+            let mut drained = 0;
+
+            while let Ok((request, adjust_send_timer)) = self.queue.try_recv() {
+                drained += 1;
+                let label = request.queue_label();
+                let _ = adjust_send_timer.send(Instant::now());
+                debug!(
+                    "[faces_diag][quic_client][request_queue] stale_request_drained reason={} label={}",
+                    reason, label
+                );
+            }
+
+            if drained > 0 {
+                warn!(
+                    "[faces_diag][quic_client][request_queue] stale_flush reason={} drained_requests={} elapsed_ms={}",
+                    reason,
+                    drained,
+                    started_at.elapsed().as_millis()
+                );
+            } else {
+                info!(
+                    "[faces_diag][quic_client][request_queue] stale_flush reason={} drained_requests=0 elapsed_ms={}",
+                    reason,
+                    started_at.elapsed().as_millis()
+                );
+            }
+
+            drained
+        }
     }
     impl Clone for RequestQueue {
         fn clone(&self) -> Self {
@@ -250,7 +282,7 @@ mod request_builder {
     };
 
     use log::{debug, error, info, warn};
-    use quiche::h3::{self, Header};
+    use quiche::h3::{self, Header, NameValue};
     use ring::error;
     use uuid::Uuid;
 
@@ -494,6 +526,12 @@ mod request_builder {
         pub fn headers(&self) -> &Vec<Header> {
             &self.headers
         }
+        pub fn path(&self) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|hdr| hdr.name() == b":path")
+                .and_then(|hdr| std::str::from_utf8(hdr.value()).ok())
+        }
         pub fn is_end(&self) -> bool {
             self.is_end
         }
@@ -513,6 +551,24 @@ mod request_builder {
                 ping_emission_control: None,
                 long_connection_stream_id: None,
                 uuid,
+            }
+        }
+
+        pub fn queue_label(&self) -> String {
+            match self {
+                Self::Body(body) => format!(
+                    "body:stream_id={}:packet_id={}:end={}",
+                    body.stream_id(),
+                    body.packet_id(),
+                    body.is_end()
+                ),
+                Self::CloseStream { stream_id } => format!("close_stream:stream_id={}", stream_id),
+                Self::Header(header) => {
+                    format!("header:path={}", header.path().unwrap_or("<unknown>"))
+                }
+                Self::BodyFromFile => "body_from_file".to_owned(),
+                Self::Ping(_) => "ping".to_owned(),
+                Self::GoAway { stream_id } => format!("goaway:stream_id={}", stream_id),
             }
         }
     }

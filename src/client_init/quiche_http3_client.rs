@@ -33,6 +33,7 @@ pub fn run(
     confirm_connexion: crossbeam::channel::Sender<(String, Waker)>,
     thread_controller: &ThreadController,
 ) -> Result<String, ()> {
+    let loop_started_at = Instant::now();
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
     let mut last_sending_time = Duration::ZERO;
@@ -52,6 +53,10 @@ pub fn run(
     // server address. This is needed on macOS and BSD variants that don't
     // support binding to IN6ADDR_ANY for both v4 and v6.
     let bind_addr = client_config.local_address().unwrap();
+    info!(
+        "[faces_diag][quic_client][loop] start peer={} bind_addr={}",
+        peer_addr, bind_addr
+    );
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
     let mut socket = mio::net::UdpSocket::bind(bind_addr).unwrap();
@@ -102,6 +107,12 @@ pub fn run(
         socket.local_addr().unwrap(),
         hex_dump(&scid)
     );
+    info!(
+        "[faces_diag][quic_client][loop] connect_start peer={} local={} scid={}",
+        peer_addr,
+        socket.local_addr().unwrap(),
+        hex_dump(&scid)
+    );
     let (write, send_info) = conn.send(&mut out).expect("initial send failed");
     while let Err(e) = socket.send_to(&out[..write], send_info.to) {
         if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -113,6 +124,12 @@ pub fn run(
         println!("QUICHE CLIENT FAILURE [{:?}]", e);
         return Ok(String::new());
     }
+    info!(
+        "[faces_diag][quic_client][loop] initial_packet_sent peer={} bytes={} elapsed_ms={}",
+        send_info.to,
+        write,
+        loop_started_at.elapsed().as_millis()
+    );
     let h3_config = quiche::h3::Config::new().unwrap();
 
     let mut conn_confirmation = false;
@@ -203,15 +220,32 @@ pub fn run(
                 quiche::h3::Connection::with_transport(&mut conn, &h3_config)
                 .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
             );
+            info!(
+                "[faces_diag][quic_client][loop] h3_ready conn_id={} elapsed_ms={}",
+                conn.trace_id(),
+                loop_started_at.elapsed().as_millis()
+            );
 
             if !conn_confirmation {
                 if let Err(e) =
                     confirm_connexion.send((conn.trace_id().to_string(), waker.take().unwrap()))
                 {
+                    warn!(
+                        "[faces_diag][quic_client][loop] connection_confirmation_failed conn_id={} elapsed_ms={} error={:?}",
+                        conn.trace_id(),
+                        loop_started_at.elapsed().as_millis(),
+                        e
+                    );
                     debug!(
                         "Error : failed to send connxion confirmation for [{:?}]   [{:?}]",
                         conn.trace_id(),
                         e
+                    );
+                } else {
+                    info!(
+                        "[faces_diag][quic_client][loop] connection_confirmation_sent conn_id={} elapsed_ms={}",
+                        conn.trace_id(),
+                        loop_started_at.elapsed().as_millis()
                     );
                 }
                 conn_confirmation = true;
@@ -321,19 +355,58 @@ pub fn run(
                     my_log::debug(&req);
                     match req {
                         Http3Request::Header(header_req) => {
-                            if let Ok(stream_id) = h3_conn.send_request(
+                            let request_path = header_req.path().unwrap_or("<unknown>").to_owned();
+                            let send_started_at = Instant::now();
+                            info!(
+                                "[faces_diag][quic_client][loop] header_dequeued path={} conn_id={}",
+                                request_path, trace_id
+                            );
+                            match h3_conn.send_request(
                                 &mut conn,
                                 header_req.headers(),
                                 header_req.is_end(),
                             ) {
-                                req_start = std::time::Instant::now();
-                                let _ = waker_1.wake();
+                                Ok(stream_id) => {
+                                    req_start = std::time::Instant::now();
+                                    info!(
+                                        "[faces_diag][quic_client][loop] header_sent path={} conn_id={} stream_id={} elapsed_ms={}",
+                                        request_path,
+                                        trace_id,
+                                        stream_id,
+                                        send_started_at.elapsed().as_millis()
+                                    );
+                                    let _ = waker_1.wake();
 
-                                if let Err(e) = header_req.send_ids(stream_id, trace_id.as_str()) {
-                                    error!("failed to send back stream ids")
+                                    if let Err(e) =
+                                        header_req.send_ids(stream_id, trace_id.as_str())
+                                    {
+                                        error!(
+                                            "[faces_diag][quic_client][loop] stream_id_notify_failed path={} conn_id={} stream_id={} error={:?}",
+                                            request_path,
+                                            trace_id,
+                                            stream_id,
+                                            e
+                                        );
+                                        error!("failed to send back stream ids")
+                                    } else {
+                                        info!(
+                                            "[faces_diag][quic_client][loop] stream_id_notified path={} conn_id={} stream_id={}",
+                                            request_path,
+                                            trace_id,
+                                            stream_id
+                                        );
+                                    }
+                                    my_log::debug(format!("sended succes [{:?}]", header_req));
+                                    println!("[{:?}]", format!("sended succes [{:?}]", header_req));
                                 }
-                                my_log::debug(format!("sended succes [{:?}]", header_req));
-                                println!("[{:?}]", format!("sended succes [{:?}]", header_req));
+                                Err(e) => {
+                                    warn!(
+                                        "[faces_diag][quic_client][loop] send_request_failed path={} conn_id={} error={:?}",
+                                        request_path,
+                                        trace_id,
+                                        e
+                                    );
+                                }
                             }
                         }
                         Http3Request::CloseStream { stream_id } => {
