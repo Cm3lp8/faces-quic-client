@@ -46,7 +46,16 @@ mod client_request_mngr {
         http3_client: Arc<Http3Client>,
         waker: Arc<Mutex<Option<Waker>>>,
         connect_lock: Arc<Mutex<()>>,
+        active_connect: Arc<Mutex<Option<ActiveConnectAttempt>>>,
         thread_controller: ThreadController,
+    }
+
+    struct ActiveConnectAttempt {
+        kind: String,
+        path: String,
+        request_id: Uuid,
+        preemptible: bool,
+        started_at: Instant,
     }
 
     impl Clone for ClientRequestManager {
@@ -61,6 +70,7 @@ mod client_request_mngr {
                 http3_client: self.http3_client.clone(),
                 waker: self.waker.clone(),
                 connect_lock: self.connect_lock.clone(),
+                active_connect: self.active_connect.clone(),
                 thread_controller: self.thread_controller.clone(),
             }
         }
@@ -91,6 +101,7 @@ mod client_request_mngr {
                 http3_client,
                 waker: Arc::new(Mutex::new(None)),
                 connect_lock: Arc::new(Mutex::new(())),
+                active_connect: Arc::new(Mutex::new(None)),
                 thread_controller: thread_controller.clone(),
             }
         }
@@ -149,6 +160,10 @@ mod client_request_mngr {
             matches!(reason, "app_resumed" | "network_available")
         }
 
+        fn should_preempt_pending_connect(reason: &str) -> bool {
+            matches!(reason, "app_resumed" | "network_available")
+        }
+
         fn preconnect_timeout(reason: &str) -> Duration {
             match reason {
                 "app_resumed" | "network_available" => FOREGROUND_CONNECT_TIMEOUT,
@@ -156,10 +171,18 @@ mod client_request_mngr {
             }
         }
 
+        fn is_preemptible_request_connect(kind: &str, path: &Option<String>) -> bool {
+            matches!(
+                (kind, Self::path_for_log(path)),
+                ("downstream", _) | (_, "/down_stream_ack") | (_, "/fetch_resource_data")
+            )
+        }
+
         fn request_connect_timeout(kind: &str, path: &Option<String>) -> Duration {
-            match (kind, Self::path_for_log(path)) {
-                ("downstream", _) | (_, "/down_stream_ack") => BACKGROUND_CONNECT_TIMEOUT,
-                _ => DEFAULT_CONNECT_TIMEOUT,
+            if Self::is_preemptible_request_connect(kind, path) {
+                BACKGROUND_CONNECT_TIMEOUT
+            } else {
+                DEFAULT_CONNECT_TIMEOUT
             }
         }
 
@@ -178,6 +201,41 @@ mod client_request_mngr {
                     started_at.elapsed().as_millis()
                 );
                 return Ok(());
+            }
+
+            if Self::should_preempt_pending_connect(reason) {
+                let should_invalidate = {
+                    let active_connect = self.active_connect.lock().unwrap();
+                    match active_connect.as_ref() {
+                        Some(active) if active.preemptible => {
+                            warn!(
+                                "[faces_diag][quic_client][preconnect] preempt_pending_connect reason={} active_kind={} active_path={} active_request_id={} active_elapsed_ms={}",
+                                reason,
+                                active.kind,
+                                active.path,
+                                active.request_id,
+                                active.started_at.elapsed().as_millis()
+                            );
+                            true
+                        }
+                        Some(active) => {
+                            info!(
+                                "[faces_diag][quic_client][preconnect] keep_pending_connect reason={} active_kind={} active_path={} active_request_id={} active_elapsed_ms={}",
+                                reason,
+                                active.kind,
+                                active.path,
+                                active.request_id,
+                                active.started_at.elapsed().as_millis()
+                            );
+                            false
+                        }
+                        None => true,
+                    }
+                };
+
+                if should_invalidate {
+                    self.http3_client.invalidate_pending_connects(reason);
+                }
             }
 
             let _connect_guard = self.connect_lock.lock().unwrap();
@@ -255,17 +313,39 @@ mod client_request_mngr {
                     return Ok(());
                 }
 
+                let timeout = Self::request_connect_timeout(kind, path);
+                let preemptible = Self::is_preemptible_request_connect(kind, path);
                 info!(
-                    "[faces_diag][quic_client][request] connection_needed kind={} path={} request_id={} timeout_ms={}",
+                    "[faces_diag][quic_client][request] connection_needed kind={} path={} request_id={} timeout_ms={} preemptible={}",
                     kind,
                     Self::path_for_log(path),
                     req_id,
-                    Self::request_connect_timeout(kind, path).as_millis()
+                    timeout.as_millis(),
+                    preemptible
                 );
-                match self
-                    .http3_client
-                    .connect_with_timeout(Self::request_connect_timeout(kind, path))
                 {
+                    let mut active_connect = self.active_connect.lock().unwrap();
+                    *active_connect = Some(ActiveConnectAttempt {
+                        kind: kind.to_owned(),
+                        path: Self::path_for_log(path).to_owned(),
+                        request_id: req_id,
+                        preemptible,
+                        started_at: Instant::now(),
+                    });
+                }
+                let connect_result = self.http3_client.connect_with_timeout(timeout);
+                {
+                    let mut active_connect = self.active_connect.lock().unwrap();
+                    if active_connect
+                        .as_ref()
+                        .map(|active| active.request_id == req_id)
+                        .unwrap_or(false)
+                    {
+                        *active_connect = None;
+                    }
+                }
+
+                match connect_result {
                     Ok((conn_id, waker)) => {
                         *self.waker.lock().unwrap() = Some(waker);
                         info!(

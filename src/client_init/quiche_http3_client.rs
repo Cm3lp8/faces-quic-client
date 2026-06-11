@@ -11,7 +11,10 @@ use ring::rand::*;
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -32,6 +35,8 @@ pub fn run(
     _body_queue: BodyQueue,
     confirm_connexion: crossbeam::channel::Sender<(String, Waker)>,
     thread_controller: &ThreadController,
+    connect_generation: Arc<AtomicU64>,
+    run_generation: u64,
 ) -> Result<String, ()> {
     let loop_started_at = Instant::now();
     let mut buf = [0; 65535];
@@ -54,8 +59,8 @@ pub fn run(
     // support binding to IN6ADDR_ANY for both v4 and v6.
     let bind_addr = client_config.local_address().unwrap();
     info!(
-        "[faces_diag][quic_client][loop] start peer={} bind_addr={}",
-        peer_addr, bind_addr
+        "[faces_diag][quic_client][loop] start peer={} bind_addr={} generation={}",
+        peer_addr, bind_addr, run_generation
     );
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
@@ -149,6 +154,18 @@ pub fn run(
         if !thread_controller.is_on() {
             break 'main Ok("thread stopped !".to_owned());
         }
+        let current_generation = connect_generation.load(Ordering::Relaxed);
+        if current_generation != run_generation {
+            warn!(
+                "[faces_diag][quic_client][loop] stale_generation_stop stage=before_poll conn_id={} generation={} current_generation={} elapsed_ms={}",
+                conn.trace_id(),
+                run_generation,
+                current_generation,
+                loop_started_at.elapsed().as_millis()
+            );
+            let _ = conn.close(false, 0x1, b"stale_generation");
+            break 'main Err(());
+        }
         match poll.poll(&mut events, conn.timeout()) {
             Ok(_) => {}
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
@@ -158,6 +175,18 @@ pub fn run(
                 println!("serious error, break quiche client loop [{:?}] ", e);
                 break Err(());
             }
+        }
+        let current_generation = connect_generation.load(Ordering::Relaxed);
+        if current_generation != run_generation {
+            warn!(
+                "[faces_diag][quic_client][loop] stale_generation_stop stage=after_poll conn_id={} generation={} current_generation={} elapsed_ms={}",
+                conn.trace_id(),
+                run_generation,
+                current_generation,
+                loop_started_at.elapsed().as_millis()
+            );
+            let _ = conn.close(false, 0x1, b"stale_generation");
+            break 'main Err(());
         }
         round += 1;
         // Read incoming UDP packets from the socket and feed them to quiche,
@@ -241,6 +270,8 @@ pub fn run(
                         conn.trace_id(),
                         e
                     );
+                    let _ = conn.close(false, 0x1, b"confirmation_receiver_closed");
+                    break 'main Err(());
                 } else {
                     info!(
                         "[faces_diag][quic_client][loop] connection_confirmation_sent conn_id={} elapsed_ms={}",
