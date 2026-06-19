@@ -780,15 +780,29 @@ mod response_builder {
                 .unwrap();
             self
         }
+        pub fn stream_id(&self) -> u64 {
+            self.stream_id
+        }
+        pub fn connexion_id(&self) -> &str {
+            self.connexion_id.as_str()
+        }
         // TODO impl a max wait, impl a better error handling (distinction between Disconnected and
         // server not responding)
         pub fn wait_response(&self) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
+            self.wait_response_with_timeout(Duration::from_secs(30))
+        }
+        pub fn wait_response_with_timeout(
+            &self,
+            timeout: Duration,
+        ) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
             let started_at = Instant::now();
             while self.thread_controller.is_on() {
-                if started_at.elapsed() > Duration::from_secs(30) {
+                if started_at.elapsed() > timeout {
                     info!(
-                        "[faces_diag][quic_client] wait_response hard timeout stream_id={} connexion_id={}",
-                        self.stream_id, self.connexion_id
+                        "[faces_diag][quic_client] wait_response hard timeout stream_id={} connexion_id={} timeout_ms={}",
+                        self.stream_id,
+                        self.connexion_id,
+                        timeout.as_millis()
                     );
                     return Err(RecvError);
                 }
