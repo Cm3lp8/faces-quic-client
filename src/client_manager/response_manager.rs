@@ -10,16 +10,13 @@ mod response_mngr {
     use std::{
         collections::HashMap,
         sync::{Arc, Mutex},
-        thread::Thread,
-        time::{Duration, Instant},
     };
 
-    use crossbeam::channel::RecvError;
     use uuid::Uuid;
 
     use crate::{
         client_manager::request_manager::Http3RequestBuilder,
-        thread_controller::{self, ThreadController},
+        thread_controller::ThreadController,
     };
 
     use super::*;
@@ -67,8 +64,10 @@ mod response_mngr {
             }
         }
         pub fn stop(&self) {
-            let guard = &mut *self.is_running.lock().unwrap();
-            *guard = false;
+            // The response dispatcher is connection-agnostic and owns no socket. Keeping its two
+            // workers alive across reconnects avoids racing an old dispatcher against a newly
+            // spawned one on the same channels. The workers stop naturally when the channel
+            // senders are dropped with the client manager.
         }
         // Get the handle to submit PartialResponse to the response manager.
         pub fn submitter(&self) -> PartialResponseSubmitter {
@@ -90,29 +89,16 @@ mod response_mngr {
     }
     pub struct PartialResponseReceiver {
         receiver: crossbeam::channel::Receiver<PartialResponse>,
-        thread_controller: ThreadController,
     }
     impl PartialResponseReceiver {
         pub fn recv(&self) -> Result<PartialResponse, crossbeam::channel::RecvError> {
-            while self.thread_controller.is_on() {
-                match self.receiver.recv_timeout(Duration::from_millis(250)) {
-                    Ok(res) => return Ok(res),
-                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
-                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                        return Err(RecvError)
-                    }
-                };
-            }
-            Err(crossbeam::channel::RecvError)
+            self.receiver.recv()
         }
         pub fn new(
             receiver: crossbeam::channel::Receiver<PartialResponse>,
-            thread_controller: &ThreadController,
+            _thread_controller: &ThreadController,
         ) -> PartialResponseReceiver {
-            PartialResponseReceiver {
-                receiver,
-                thread_controller: thread_controller.clone(),
-            }
+            PartialResponseReceiver { receiver }
         }
     }
     pub struct PartialResponseSubmitter {
@@ -131,11 +117,7 @@ mod response_mngr {
     }
 }
 mod queue_builder {
-    use std::{thread::Thread, time::Duration};
-
-    use crossbeam::channel::RecvError;
-
-    use crate::thread_controller::{self, ThreadController};
+    use crate::thread_controller::ThreadController;
 
     use super::*;
 
@@ -179,16 +161,7 @@ mod queue_builder {
     }
     impl ResponseQueue {
         pub fn pop_response(&self) -> Result<Http3Response, crossbeam::channel::RecvError> {
-            while self.thread_controller.is_on() {
-                match self.queue.recv_timeout(Duration::from_millis(250)) {
-                    Ok(res) => return Ok(res),
-                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
-                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                        return Err(RecvError)
-                    }
-                };
-            }
-            Err(crossbeam::channel::RecvError)
+            self.queue.recv()
         }
     }
 
@@ -796,13 +769,20 @@ mod response_builder {
             timeout: Duration,
         ) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
             let started_at = Instant::now();
+            info!(
+                "[faces_diag][quic_client][response_wait] start stream_id={} conn_id={} timeout_ms={}",
+                self.stream_id,
+                self.connexion_id,
+                timeout.as_millis()
+            );
             while self.thread_controller.is_on() {
                 if started_at.elapsed() > timeout {
-                    info!(
-                        "[faces_diag][quic_client] wait_response hard timeout stream_id={} connexion_id={} timeout_ms={}",
+                    warn!(
+                        "[faces_diag][quic_client][response_wait] timeout stream_id={} conn_id={} timeout_ms={} elapsed_ms={}",
                         self.stream_id,
                         self.connexion_id,
-                        timeout.as_millis()
+                        timeout.as_millis(),
+                        started_at.elapsed().as_millis()
                     );
                     return Err(RecvError);
                 }
@@ -810,13 +790,33 @@ mod response_builder {
                     .response_channel
                     .recv_timeout(Duration::from_millis(250))
                 {
-                    Ok(res) => return Ok(res),
+                    Ok(res) => {
+                        info!(
+                            "[faces_diag][quic_client][response_wait] completed stream_id={} conn_id={} elapsed_ms={}",
+                            self.stream_id,
+                            self.connexion_id,
+                            started_at.elapsed().as_millis()
+                        );
+                        return Ok(res);
+                    }
                     Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
                     Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                        return Err(RecvError)
+                        warn!(
+                            "[faces_diag][quic_client][response_wait] channel_disconnected stream_id={} conn_id={} elapsed_ms={}",
+                            self.stream_id,
+                            self.connexion_id,
+                            started_at.elapsed().as_millis()
+                        );
+                        return Err(RecvError);
                     }
                 };
             }
+            warn!(
+                "[faces_diag][quic_client][response_wait] client_shutdown stream_id={} conn_id={} elapsed_ms={}",
+                self.stream_id,
+                self.connexion_id,
+                started_at.elapsed().as_millis()
+            );
             Err(crossbeam::channel::RecvError)
         }
     }
@@ -1013,6 +1013,9 @@ mod response_builder {
         pub fn connexion_id(&self) -> &str {
             self.connexion_id.as_str()
         }
+        pub fn req_path(&self) -> &str {
+            self.req_path.as_str()
+        }
         ///
         /// On Http3Response event, this can trigger the CompletedResponse building and sending to
         /// the client, or stack the bytes if a body is being received.
@@ -1090,9 +1093,8 @@ mod response_builder {
                         headers.stream_id(),
                         e
                     );
-                        } else {
-                            can_delete_in_table = true;
                         }
+                        can_delete_in_table = true;
                     }
                 }
                 Http3Response::Body(body) => {
@@ -1133,7 +1135,7 @@ mod response_builder {
                         .unwrap_or(0);
 
                         respond_once(self, body, status, content_len, &mut can_delete_in_table);
-                        return false;
+                        return can_delete_in_table;
                     }
                     if let BodyType::UploadProgressStatusBody(progress_status) =
                         body.body_type(self.req_path.as_str(), self.request_uuid)
@@ -1252,9 +1254,8 @@ mod response_builder {
                             body.stream_id(),
                             e
                         );
-                    } else {
-                        *can_delete_in_table = true;
                     }
+                    *can_delete_in_table = true;
                 }
             }
         }
@@ -1267,6 +1268,7 @@ mod response_manager_worker {
     };
 
     use log::{debug, info, warn};
+    use quiche::h3::NameValue;
     use uuid::Uuid;
 
     use crate::{
@@ -1289,21 +1291,77 @@ mod response_manager_worker {
         thread_controller: &ThreadController,
         request_builder_table: &Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
     ) {
+        let manager_id = Uuid::new_v4();
         let partial_response_table =
             Arc::new(Mutex::new(HashMap::<(u64, String), PartialResponse>::new()));
         let partial_table_clone_0 = partial_response_table.clone();
         let partial_table_clone_1 = partial_response_table.clone();
+        let response_worker_manager_id = manager_id;
+        let waiter_worker_manager_id = manager_id;
+        info!(
+            "[faces_diag][quic_client][response] manager_started manager_id={}",
+            manager_id
+        );
         std::thread::spawn(move || {
             while let Ok(server_response) = response_queue.pop_response() {
                 let table_guard = &mut *partial_table_clone_0.lock().unwrap();
                 let (stream_id, conn_id) = server_response.ids();
+                let event_kind = match &server_response {
+                    Http3Response::Header(_) => "headers",
+                    Http3Response::Body(body) if body.is_end() => "finished",
+                    Http3Response::Body(_) => "data",
+                };
+                let status = match &server_response {
+                    Http3Response::Header(headers) => headers
+                        .headers()
+                        .iter()
+                        .find(|header| header.name() == b":status")
+                        .map(|header| String::from_utf8_lossy(header.value()).into_owned())
+                        .unwrap_or_else(|| "missing".to_owned()),
+                    Http3Response::Body(_) => "none".to_owned(),
+                };
+                let payload_len = server_response.len().unwrap_or(0);
+                let is_end = server_response.is_end();
+                let table_size = table_guard.len();
                 let mut delete_entry = false;
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
+                    info!(
+                        "[faces_diag][quic_client][response] matched manager_id={} path={} request_id={} stream_id={} conn_id={} event={} status={} payload_len={} end={} table_size={}",
+                        response_worker_manager_id,
+                        entry.req_path(),
+                        entry.get_request_id(),
+                        stream_id,
+                        conn_id,
+                        event_kind,
+                        status,
+                        payload_len,
+                        is_end,
+                        table_size
+                    );
                     delete_entry = entry.extend_data(server_response);
+                } else {
+                    warn!(
+                        "[faces_diag][quic_client][response] orphan manager_id={} stream_id={} conn_id={} event={} status={} payload_len={} end={} table_size={}",
+                        response_worker_manager_id,
+                        stream_id,
+                        conn_id,
+                        event_kind,
+                        status,
+                        payload_len,
+                        is_end,
+                        table_size
+                    );
                 }
 
                 if delete_entry {
                     table_guard.remove(&(stream_id, conn_id.to_owned()));
+                    info!(
+                        "[faces_diag][quic_client][response] completed_and_removed manager_id={} stream_id={} conn_id={} table_size={}",
+                        response_worker_manager_id,
+                        stream_id,
+                        conn_id,
+                        table_guard.len()
+                    );
                 }
             }
             println!("ThreadController: response queue is ending !!");
@@ -1312,10 +1370,24 @@ mod response_manager_worker {
         std::thread::spawn(move || {
             while let Ok(partial_response_submission) = partial_response_receiver.recv() {
                 let stream_id = partial_response_submission.stream_id();
-                let conn_id = partial_response_submission.connexion_id();
+                let conn_id = partial_response_submission.connexion_id().to_owned();
+                let request_id = partial_response_submission.get_request_id();
+                let path = partial_response_submission.req_path().to_owned();
                 let table_guard = &mut *partial_table_clone_1.lock().unwrap();
 
-                table_guard.insert((stream_id, conn_id.to_owned()), partial_response_submission);
+                let replaced = table_guard
+                    .insert((stream_id, conn_id.clone()), partial_response_submission)
+                    .is_some();
+                info!(
+                    "[faces_diag][quic_client][response] waiter_registered manager_id={} path={} request_id={} stream_id={} conn_id={} replaced={} table_size={}",
+                    waiter_worker_manager_id,
+                    path,
+                    request_id,
+                    stream_id,
+                    conn_id,
+                    replaced,
+                    table_guard.len()
+                );
             }
             println!("ThreadController: partial_response receiver  is ending !!");
         });

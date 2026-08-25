@@ -600,8 +600,17 @@ mod client_request_mngr {
                         match req {
                             Http3RequestPrep::Body(body_req) => {
                                 my_log::debug(&body_req);
-                                self.request_head
-                                    .send_body(stream_id, 8192, body_req.take());
+                                let body = body_req.take();
+                                let body_len = body.len();
+                                self.request_head.send_body(stream_id, 8192, body);
+                                info!(
+                                    "[faces_diag][quic_client][request] body_enqueued kind=builder path={} request_id={} stream_id={} conn_id={} body_len={}",
+                                    Self::path_for_log(&path),
+                                    req_id,
+                                    stream_id,
+                                    stream_ids.1.as_str(),
+                                    body_len
+                                );
                             }
                             _ => my_log::log("no body"),
                         }
@@ -612,10 +621,18 @@ mod client_request_mngr {
                     let response_sender = response_chan.0.clone();
 
                     let thread_controller = self.thread_controller.clone();
+                    info!(
+                        "[faces_diag][quic_client][request] waiter_thread_spawn kind=builder path={} request_id={} stream_id={} conn_id={}",
+                        Self::path_for_log(&path),
+                        req_id,
+                        stream_id,
+                        stream_ids.1.as_str()
+                    );
                     std::thread::spawn(move || {
+                        let path = path.unwrap();
                         let (partial_response, completed_channel, progress_channel) =
                             PartialResponse::new(
-                                path.unwrap().as_str(),
+                                path.as_str(),
                                 event_subscriber,
                                 &stream_ids,
                                 req_id,
@@ -627,13 +644,50 @@ mod client_request_mngr {
                             progress_channel,
                             &thread_controller,
                         );
+                        info!(
+                            "[faces_diag][quic_client][request] waiter_created kind=builder path={} request_id={} stream_id={} conn_id={}",
+                            path,
+                            req_id,
+                            stream_ids.0,
+                            stream_ids.1.as_str()
+                        );
                         if let Err(e) = response_sender.send(peer_response) {
-                            println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
+                            warn!(
+                                "[faces_diag][quic_client][request] waiter_return_failed kind=builder path={} request_id={} stream_id={} conn_id={} error={:?}",
+                                path,
+                                req_id,
+                                stream_ids.0,
+                                stream_ids.1.as_str(),
+                                e
+                            );
+                        } else {
+                            info!(
+                                "[faces_diag][quic_client][request] waiter_returned kind=builder path={} request_id={} stream_id={} conn_id={}",
+                                path,
+                                req_id,
+                                stream_ids.0,
+                                stream_ids.1.as_str()
+                            );
                         }
 
                         //send partial response to the reponse manager
                         if let Err(e) = response_manager_submission.submit(partial_response) {
-                            println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
+                            warn!(
+                                "[faces_diag][quic_client][request] waiter_submit_failed kind=builder path={} request_id={} stream_id={} conn_id={} error={:?}",
+                                path,
+                                req_id,
+                                stream_ids.0,
+                                stream_ids.1.as_str(),
+                                e
+                            );
+                        } else {
+                            info!(
+                                "[faces_diag][quic_client][request] waiter_submitted kind=builder path={} request_id={} stream_id={} conn_id={}",
+                                path,
+                                req_id,
+                                stream_ids.0,
+                                stream_ids.1.as_str()
+                            );
                         }
 
                         /*
