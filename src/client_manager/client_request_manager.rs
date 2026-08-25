@@ -7,7 +7,7 @@ mod client_request_mngr {
         time::{Duration, Instant},
     };
 
-    use log::{error, info, warn};
+    use log::{error, info, trace, warn};
     use mio::Waker;
     use uuid::Uuid;
 
@@ -603,7 +603,7 @@ mod client_request_mngr {
                                 let body = body_req.take();
                                 let body_len = body.len();
                                 self.request_head.send_body(stream_id, 8192, body);
-                                info!(
+                                trace!(
                                     "[faces_diag][quic_client][request] body_enqueued kind=builder path={} request_id={} stream_id={} conn_id={} body_len={}",
                                     Self::path_for_log(&path),
                                     req_id,
@@ -621,7 +621,7 @@ mod client_request_mngr {
                     let response_sender = response_chan.0.clone();
 
                     let thread_controller = self.thread_controller.clone();
-                    info!(
+                    trace!(
                         "[faces_diag][quic_client][request] waiter_thread_spawn kind=builder path={} request_id={} stream_id={} conn_id={}",
                         Self::path_for_log(&path),
                         req_id,
@@ -644,7 +644,7 @@ mod client_request_mngr {
                             progress_channel,
                             &thread_controller,
                         );
-                        info!(
+                        trace!(
                             "[faces_diag][quic_client][request] waiter_created kind=builder path={} request_id={} stream_id={} conn_id={}",
                             path,
                             req_id,
@@ -652,7 +652,7 @@ mod client_request_mngr {
                             stream_ids.1.as_str()
                         );
                         if let Err(e) = response_sender.send(peer_response) {
-                            warn!(
+                            trace!(
                                 "[faces_diag][quic_client][request] waiter_return_failed kind=builder path={} request_id={} stream_id={} conn_id={} error={:?}",
                                 path,
                                 req_id,
@@ -661,7 +661,7 @@ mod client_request_mngr {
                                 e
                             );
                         } else {
-                            info!(
+                            trace!(
                                 "[faces_diag][quic_client][request] waiter_returned kind=builder path={} request_id={} stream_id={} conn_id={}",
                                 path,
                                 req_id,
@@ -672,7 +672,7 @@ mod client_request_mngr {
 
                         //send partial response to the reponse manager
                         if let Err(e) = response_manager_submission.submit(partial_response) {
-                            warn!(
+                            trace!(
                                 "[faces_diag][quic_client][request] waiter_submit_failed kind=builder path={} request_id={} stream_id={} conn_id={} error={:?}",
                                 path,
                                 req_id,
@@ -681,7 +681,7 @@ mod client_request_mngr {
                                 e
                             );
                         } else {
-                            info!(
+                            trace!(
                                 "[faces_diag][quic_client][request] waiter_submitted kind=builder path={} request_id={} stream_id={} conn_id={}",
                                 path,
                                 req_id,

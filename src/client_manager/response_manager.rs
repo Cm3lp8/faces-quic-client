@@ -204,7 +204,7 @@ mod response_builder {
     };
 
     use crossbeam::channel::RecvError;
-    use log::{debug, error, info, warn};
+    use log::{debug, error, info, trace, warn};
     use mio::net::UnixDatagram;
     use notify_rust::Notification;
     use quiche::h3::{self, Header, NameValue};
@@ -769,7 +769,7 @@ mod response_builder {
             timeout: Duration,
         ) -> Result<CompletedResponse, crossbeam::channel::RecvError> {
             let started_at = Instant::now();
-            info!(
+            trace!(
                 "[faces_diag][quic_client][response_wait] start stream_id={} conn_id={} timeout_ms={}",
                 self.stream_id,
                 self.connexion_id,
@@ -777,7 +777,7 @@ mod response_builder {
             );
             while self.thread_controller.is_on() {
                 if started_at.elapsed() > timeout {
-                    warn!(
+                    trace!(
                         "[faces_diag][quic_client][response_wait] timeout stream_id={} conn_id={} timeout_ms={} elapsed_ms={}",
                         self.stream_id,
                         self.connexion_id,
@@ -791,7 +791,7 @@ mod response_builder {
                     .recv_timeout(Duration::from_millis(250))
                 {
                     Ok(res) => {
-                        info!(
+                        trace!(
                             "[faces_diag][quic_client][response_wait] completed stream_id={} conn_id={} elapsed_ms={}",
                             self.stream_id,
                             self.connexion_id,
@@ -801,7 +801,7 @@ mod response_builder {
                     }
                     Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
                     Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                        warn!(
+                        trace!(
                             "[faces_diag][quic_client][response_wait] channel_disconnected stream_id={} conn_id={} elapsed_ms={}",
                             self.stream_id,
                             self.connexion_id,
@@ -811,7 +811,7 @@ mod response_builder {
                     }
                 };
             }
-            warn!(
+            trace!(
                 "[faces_diag][quic_client][response_wait] client_shutdown stream_id={} conn_id={} elapsed_ms={}",
                 self.stream_id,
                 self.connexion_id,
@@ -1267,7 +1267,7 @@ mod response_manager_worker {
         sync::{Arc, Mutex},
     };
 
-    use log::{debug, info, warn};
+    use log::{debug, info, trace, warn};
     use quiche::h3::NameValue;
     use uuid::Uuid;
 
@@ -1298,7 +1298,7 @@ mod response_manager_worker {
         let partial_table_clone_1 = partial_response_table.clone();
         let response_worker_manager_id = manager_id;
         let waiter_worker_manager_id = manager_id;
-        info!(
+        trace!(
             "[faces_diag][quic_client][response] manager_started manager_id={}",
             manager_id
         );
@@ -1325,7 +1325,7 @@ mod response_manager_worker {
                 let table_size = table_guard.len();
                 let mut delete_entry = false;
                 if let Some(entry) = table_guard.get_mut(&(stream_id, conn_id.to_owned())) {
-                    info!(
+                    trace!(
                         "[faces_diag][quic_client][response] matched manager_id={} path={} request_id={} stream_id={} conn_id={} event={} status={} payload_len={} end={} table_size={}",
                         response_worker_manager_id,
                         entry.req_path(),
@@ -1340,7 +1340,7 @@ mod response_manager_worker {
                     );
                     delete_entry = entry.extend_data(server_response);
                 } else {
-                    warn!(
+                    trace!(
                         "[faces_diag][quic_client][response] orphan manager_id={} stream_id={} conn_id={} event={} status={} payload_len={} end={} table_size={}",
                         response_worker_manager_id,
                         stream_id,
@@ -1355,7 +1355,7 @@ mod response_manager_worker {
 
                 if delete_entry {
                     table_guard.remove(&(stream_id, conn_id.to_owned()));
-                    info!(
+                    trace!(
                         "[faces_diag][quic_client][response] completed_and_removed manager_id={} stream_id={} conn_id={} table_size={}",
                         response_worker_manager_id,
                         stream_id,
@@ -1378,7 +1378,7 @@ mod response_manager_worker {
                 let replaced = table_guard
                     .insert((stream_id, conn_id.clone()), partial_response_submission)
                     .is_some();
-                info!(
+                trace!(
                     "[faces_diag][quic_client][response] waiter_registered manager_id={} path={} request_id={} stream_id={} conn_id={} replaced={} table_size={}",
                     waiter_worker_manager_id,
                     path,
