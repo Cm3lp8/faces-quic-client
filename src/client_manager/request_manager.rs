@@ -730,11 +730,7 @@ mod request_builder {
                     res
                 }
                 H3Method::POST { mut payload } => {
-                    /*
-                    if payload.len() == 0 {
-                        error!("Payload must be > to 0 bytes");
-                        return Err(());
-                    }*/
+                    let has_payload = payload.len() != 0;
                     let mut content_type: Option<h3::Header> = None;
                     if let Some(content_type_set) = &self.content_type {
                         content_type = Some(h3::Header::new(
@@ -743,7 +739,7 @@ mod request_builder {
                         ));
                     }
 
-                    let mut hdr_req = HeaderRequest::new(false, sender)
+                    let mut hdr_req = HeaderRequest::new(!has_payload, sender)
                         .add_header(":method", "POST")
                         .add_header(":scheme", "https")
                         .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
@@ -764,11 +760,10 @@ mod request_builder {
                             hdr_req.add_header_mut(hdr.0.as_str(), hdr.1.as_str());
                         }
                     }
-                    let mut res = vec![
-                        Http3RequestPrep::Header(hdr_req),
-                        //   header request
-                        Http3RequestPrep::Body(Content::new(payload)),
-                    ];
+                    let mut res = vec![Http3RequestPrep::Header(hdr_req)];
+                    if has_payload {
+                        res.push(Http3RequestPrep::Body(Content::new(payload)));
+                    }
                     if let Some(ping_frequency) = keep_alive {
                         res.push(Http3RequestPrep::Ping(ping_frequency.duration()))
                     }
@@ -849,10 +844,7 @@ mod request_builder {
                     vec![Http3RequestPrep::Header(hdr_req)]
                 }
                 H3Method::POST { mut payload } => {
-                    if payload.len() == 0 {
-                        error!("Payload must be > to 0 bytes");
-                        return Err(());
-                    }
+                    let has_payload = payload.len() != 0;
                     let mut content_type: Option<h3::Header> = None;
                     if let Some(content_type_set) = &self.content_type {
                         content_type = Some(h3::Header::new(
@@ -861,7 +853,7 @@ mod request_builder {
                         ));
                     }
 
-                    let mut hdr_req = HeaderRequest::new(false, sender)
+                    let mut hdr_req = HeaderRequest::new(!has_payload, sender)
                         .add_header(":method", "POST")
                         .add_header(":scheme", "https")
                         .add_header(":path", self.path.as_ref().unwrap().to_string().as_str())
@@ -882,11 +874,11 @@ mod request_builder {
                             hdr_req.add_header_mut(hdr.0.as_str(), hdr.1.as_str());
                         }
                     }
-                    vec![
-                        Http3RequestPrep::Header(hdr_req),
-                        //   header request
-                        Http3RequestPrep::Body(Content::new(payload)),
-                    ]
+                    let mut request = vec![Http3RequestPrep::Header(hdr_req)];
+                    if has_payload {
+                        request.push(Http3RequestPrep::Body(Content::new(payload)));
+                    }
+                    request
                 }
                 H3Method::DELETE => {
                     let mut hrd_req = HeaderRequest::new(true, sender)
@@ -1113,9 +1105,68 @@ mod test {
     use std::{net::SocketAddr, str::FromStr};
 
     use quiche::h3::NameValue;
-    use test::request_format::BodyType;
 
     use super::*;
+
+    fn request_builder() -> Http3RequestBuilder {
+        Http3RequestPrep::new(
+            Some(SocketAddr::from_str("127.0.0.1:3000").unwrap()),
+            uuid::Uuid::nil(),
+        )
+    }
+
+    fn assert_empty_post(request: Vec<Http3RequestPrep>) {
+        assert_eq!(request.len(), 1);
+        let Http3RequestPrep::Header(header) = &request[0] else {
+            panic!("an empty POST must be completed by its headers");
+        };
+        assert!(header.is_end());
+        assert!(header
+            .headers()
+            .iter()
+            .any(|header| { header.name() == b":method" && header.value() == b"POST" }));
+        assert!(header
+            .headers()
+            .iter()
+            .any(|header| { header.name() == b"content-length" && header.value() == b"0" }));
+    }
+
+    #[test]
+    fn build_accepts_empty_post() {
+        let mut builder = request_builder();
+        builder.post_data("/capabilities".to_owned(), Vec::new());
+
+        let (request, _, confirmation) = builder.build().unwrap();
+
+        assert!(confirmation.is_some());
+        assert_empty_post(request);
+    }
+
+    #[test]
+    fn build_downstream_accepts_empty_post() {
+        let mut builder = request_builder();
+        builder.post_data("/events".to_owned(), Vec::new());
+
+        let (request, _, confirmation) = builder.build_down_stream(&None).unwrap();
+
+        assert!(confirmation.is_some());
+        assert_empty_post(request);
+    }
+
+    #[test]
+    fn build_non_empty_post_keeps_body_open() {
+        let mut builder = request_builder();
+        builder.post_data("/payload".to_owned(), vec![1]);
+
+        let (request, _, _) = builder.build().unwrap();
+
+        assert_eq!(request.len(), 2);
+        let Http3RequestPrep::Header(header) = &request[0] else {
+            panic!("the first POST part must contain headers");
+        };
+        assert!(!header.is_end());
+        assert!(matches!(&request[1], Http3RequestPrep::Body(_)));
+    }
 
     #[test]
     fn build_post_request() {
