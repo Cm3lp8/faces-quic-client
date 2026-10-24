@@ -26,14 +26,13 @@ use crate::{
 };
 const MAX_DATAGRAM_SIZE: usize = 1350;
 const WAKER_TOKEN: Token = Token(1);
-const WAKER_TOKEN_1: Token = Token(2);
 const STALE_CONNECTION_RX_TIMEOUT: Duration = Duration::from_secs(25);
 pub fn run(
     client_config: Arc<ClientConfig>,
     request_queue: RequestQueue,
     response_queue: ResponseHead,
     _body_queue: BodyQueue,
-    confirm_connexion: crossbeam::channel::Sender<(String, Waker)>,
+    confirm_connexion: crossbeam::channel::Sender<(String, Arc<Waker>)>,
     thread_controller: &ThreadController,
     connect_generation: Arc<AtomicU64>,
     run_generation: u64,
@@ -68,9 +67,8 @@ pub fn run(
     let mut last_instant: Option<Instant> = None;
     let mut last_valid_rx = Instant::now();
 
-    let mut waker = Some(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
-
-    let waker_1 = Waker::new(poll.registry(), WAKER_TOKEN_1).unwrap();
+    let waker_1 = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).map_err(|_| ())?);
+    let mut waker = Some(waker_1.clone());
     poll.registry()
         .register(
             &mut socket,
@@ -169,7 +167,7 @@ pub fn run(
             let _ = conn.close(false, 0x1, b"stale_generation");
             break 'main Err(());
         }
-        match poll.poll(&mut events, conn.timeout()) {
+        match poll.poll(&mut events, Some(conn.timeout().unwrap_or(Duration::from_millis(50)).min(Duration::from_millis(50)))) {
             Ok(_) => {}
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
                 continue;

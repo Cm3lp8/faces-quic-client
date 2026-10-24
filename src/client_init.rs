@@ -4,8 +4,8 @@ pub use http3_client::Http3Client;
 mod http3_client {
     use std::{
         sync::{
-            atomic::{AtomicU64, Ordering},
             Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
         },
         time::{Duration, Instant},
     };
@@ -31,8 +31,17 @@ mod http3_client {
         connexion_opened: Arc<Mutex<bool>>,
         thread_controller: ThreadController,
         connect_generation: Arc<AtomicU64>,
+        loops: Arc<(Mutex<usize>, std::sync::Condvar)>,
     }
 
+    struct LoopOwner(Arc<(Mutex<usize>, std::sync::Condvar)>);
+    impl Drop for LoopOwner {
+        fn drop(&mut self) {
+            let mut count = self.0.0.lock().unwrap();
+            *count -= 1;
+            self.0.1.notify_all();
+        }
+    }
     impl Http3Client {
         pub fn new(
             client_configuration: ClientConfig,
@@ -49,6 +58,7 @@ mod http3_client {
                 connexion_opened: Arc::new(Mutex::new(false)),
                 thread_controller: thread_controller.clone(),
                 connect_generation: Arc::new(AtomicU64::new(0)),
+                loops: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
             }
         }
 
@@ -57,6 +67,15 @@ mod http3_client {
         ///
         pub fn is_off(&self) -> bool {
             !*self.connexion_opened.lock().unwrap()
+        }
+        pub fn wait_stopped(&self, timeout: Duration) -> Result<(), ()> {
+            let deadline = Instant::now() + timeout;
+            let mut count = self.loops.0.lock().unwrap();
+            while *count != 0 {
+                let remaining = deadline.checked_duration_since(Instant::now()).ok_or(())?;
+                count = self.loops.1.wait_timeout(count, remaining).unwrap().0;
+            }
+            Ok(())
         }
         pub fn mark_disconnected(&self) {
             log::info!("[faces_diag][quic_client][connect] mark_disconnected");
@@ -83,14 +102,14 @@ mod http3_client {
         ///return the connexion id String.
         ///
         ///
-        pub fn connect(&self) -> Result<(String, Waker), ()> {
+        pub fn connect(&self) -> Result<(String, Arc<Waker>), ()> {
             self.connect_with_timeout(DEFAULT_CONNECT_CONFIRMATION_TIMEOUT)
         }
 
         pub fn connect_with_timeout(
             &self,
             confirmation_timeout: Duration,
-        ) -> Result<(String, Waker), ()> {
+        ) -> Result<(String, Arc<Waker>), ()> {
             let started_at = Instant::now();
             let was_off = self.is_off();
             let generation = self.connect_generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -141,7 +160,7 @@ mod http3_client {
         pub fn run(
             &self,
             confirmation_timeout: Duration,
-        ) -> Result<(String, Waker), crossbeam::channel::RecvError> {
+        ) -> Result<(String, Arc<Waker>), crossbeam::channel::RecvError> {
             let generation = self.connect_generation.fetch_add(1, Ordering::Relaxed) + 1;
             self.run_at_generation(confirmation_timeout, generation)
         }
@@ -150,14 +169,22 @@ mod http3_client {
             &self,
             confirmation_timeout: Duration,
             generation: u64,
-        ) -> Result<(String, Waker), crossbeam::channel::RecvError> {
+        ) -> Result<(String, Arc<Waker>), crossbeam::channel::RecvError> {
+            // Account closure holds this same admission lock while switching the controller off.
+            let mut count = self.loops.0.lock().unwrap();
+            if !self.thread_controller.is_on() {
+                return Err(crossbeam::channel::RecvError);
+            }
+            *count += 1;
+            let loop_owner = LoopOwner(self.loops.clone());
+            drop(count);
             let configuration_clone = self.client_config.clone();
             let req_queue = self.request_queue.clone();
             let resp_head = self.response_head.clone();
             let body_queue = self.body_queue.clone();
             let connexion_opened = self.connexion_opened.clone();
             let connect_generation = self.connect_generation.clone();
-            let confirm_connexion_chan = crossbeam::channel::bounded::<(String, Waker)>(1);
+            let confirm_connexion_chan = crossbeam::channel::bounded::<(String, Arc<Waker>)>(1);
             let confirmation_started_at = Instant::now();
             let confirmation_sender = confirm_connexion_chan.0.clone();
 
@@ -170,6 +197,7 @@ mod http3_client {
 
             let thread_controller = self.thread_controller.clone();
             std::thread::spawn(move || {
+                let _loop_owner = loop_owner;
                 let loop_started_at = Instant::now();
                 log::info!(
                     "[faces_diag][quic_client][connect] loop_thread_start generation={}",
@@ -219,7 +247,7 @@ mod http3_client {
 
             loop {
                 let current_generation = self.connect_generation.load(Ordering::Relaxed);
-                if current_generation != generation {
+                if current_generation != generation || !self.thread_controller.is_on() {
                     log::warn!(
                         "[faces_diag][quic_client][connect] confirmation_cancelled generation={} current_generation={} elapsed_ms={}",
                         generation,

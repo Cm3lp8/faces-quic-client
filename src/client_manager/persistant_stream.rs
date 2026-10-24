@@ -38,7 +38,7 @@ mod ping_emission {
             ping_freq: Duration,
             request_sender: &RequestHead,
             stream_id: u64,
-            waker: &Arc<Mutex<Option<Waker>>>,
+            waker: &Arc<Mutex<Option<Arc<Waker>>>>,
             thread_controller: &ThreadController,
         ) -> PingEmissionControl {
             let (sender, receiver) = crossbeam::channel::bounded(1);

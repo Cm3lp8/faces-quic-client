@@ -44,7 +44,7 @@ mod client_request_mngr {
         connexion_infos: ConnexionInfos,
         response_manager: ResponseManager,
         http3_client: Arc<Http3Client>,
-        waker: Arc<Mutex<Option<Waker>>>,
+        waker: Arc<Mutex<Option<Arc<Waker>>>>,
         connect_lock: Arc<Mutex<()>>,
         active_connect: Arc<Mutex<Option<ActiveConnectAttempt>>>,
         thread_controller: ThreadController,

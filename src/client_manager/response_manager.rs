@@ -6,6 +6,11 @@ pub use response_builder::{
 };
 pub use response_mngr::ResponseManager;
 
+struct ResponseSubmission {
+    epoch: u64,
+    response: PartialResponse,
+}
+
 mod response_mngr {
     use std::{
         collections::HashMap,
@@ -15,17 +20,18 @@ mod response_mngr {
     use uuid::Uuid;
 
     use crate::{
-        client_manager::request_manager::Http3RequestBuilder,
-        thread_controller::ThreadController,
+        client_manager::request_manager::Http3RequestBuilder, thread_controller::ThreadController,
     };
 
     use super::*;
 
     pub struct ResponseManager {
+        epoch: Arc<std::sync::atomic::AtomicU64>,
+        partials: Arc<Mutex<HashMap<(u64, String), PartialResponse>>>,
         response_queue: ResponseQueue,
         partial_response_channel: (
-            crossbeam::channel::Sender<PartialResponse>,
-            crossbeam::channel::Receiver<PartialResponse>,
+            crossbeam::channel::Sender<ResponseSubmission>,
+            crossbeam::channel::Receiver<ResponseSubmission>,
         ),
         is_running: Arc<Mutex<bool>>,
         thread_controller: ThreadController,
@@ -38,6 +44,8 @@ mod response_mngr {
             request_builder: &Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
         ) -> Self {
             Self {
+                epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                partials: Arc::new(Mutex::new(HashMap::new())),
                 response_queue,
                 partial_response_channel: crossbeam::channel::unbounded(),
                 is_running: Arc::new(Mutex::new(false)),
@@ -59,19 +67,23 @@ mod response_mngr {
                     ),
                     &self.thread_controller,
                     &self.request_builder,
+                    self.partials.clone(),
+                    self.epoch.clone(),
                 );
                 *guard = true;
             }
         }
         pub fn stop(&self) {
-            // The response dispatcher is connection-agnostic and owns no socket. Keeping its two
-            // workers alive across reconnects avoids racing an old dispatcher against a newly
-            // spawned one on the same channels. The workers stop naturally when the channel
-            // senders are dropped with the client manager.
+            // Serialize retirement with insertion and response dispatch on the existing owner.
+            let mut partials = self.partials.lock().unwrap();
+            self.epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            partials.clear();
+            self.request_builder.lock().unwrap().clear();
         }
         // Get the handle to submit PartialResponse to the response manager.
         pub fn submitter(&self) -> PartialResponseSubmitter {
             PartialResponseSubmitter {
+                epoch: self.epoch.load(std::sync::atomic::Ordering::Acquire),
                 sender: self.partial_response_channel.0.clone(),
             }
         }
@@ -79,6 +91,8 @@ mod response_mngr {
     impl Clone for ResponseManager {
         fn clone(&self) -> Self {
             Self {
+                epoch: self.epoch.clone(),
+                partials: self.partials.clone(),
                 response_queue: self.response_queue.clone(),
                 is_running: self.is_running.clone(),
                 partial_response_channel: self.partial_response_channel.clone(),
@@ -88,21 +102,22 @@ mod response_mngr {
         }
     }
     pub struct PartialResponseReceiver {
-        receiver: crossbeam::channel::Receiver<PartialResponse>,
+        receiver: crossbeam::channel::Receiver<ResponseSubmission>,
     }
     impl PartialResponseReceiver {
-        pub fn recv(&self) -> Result<PartialResponse, crossbeam::channel::RecvError> {
+        pub(super) fn recv(&self) -> Result<ResponseSubmission, crossbeam::channel::RecvError> {
             self.receiver.recv()
         }
         pub fn new(
-            receiver: crossbeam::channel::Receiver<PartialResponse>,
+            receiver: crossbeam::channel::Receiver<ResponseSubmission>,
             _thread_controller: &ThreadController,
         ) -> PartialResponseReceiver {
             PartialResponseReceiver { receiver }
         }
     }
     pub struct PartialResponseSubmitter {
-        sender: crossbeam::channel::Sender<PartialResponse>,
+        epoch: u64,
+        sender: crossbeam::channel::Sender<ResponseSubmission>,
     }
     impl PartialResponseSubmitter {
         ///
@@ -112,7 +127,12 @@ mod response_mngr {
             &self,
             partial_response: PartialResponse,
         ) -> Result<(), crossbeam::channel::SendError<PartialResponse>> {
-            self.sender.send(partial_response)
+            self.sender
+                .send(ResponseSubmission {
+                    epoch: self.epoch,
+                    response: partial_response,
+                })
+                .map_err(|e| crossbeam::channel::SendError(e.0.response))
         }
     }
 }
@@ -213,10 +233,10 @@ mod response_builder {
     use uuid::Uuid;
 
     use crate::{
+        RequestEventListener,
         client_manager::persistant_stream::StreamSub,
         my_log,
         thread_controller::{self, ThreadController},
-        RequestEventListener,
     };
 
     use self::partial_response_impl::{handle_down_stream, respond_once};
@@ -436,11 +456,7 @@ mod response_builder {
             }
         }
         pub fn has_body(&self) -> bool {
-            if self.data.is_empty() {
-                false
-            } else {
-                true
-            }
+            if self.data.is_empty() { false } else { true }
         }
         pub fn is_json(&self) -> bool {
             if let Some(content_type) = self
@@ -848,7 +864,11 @@ mod response_builder {
     }
     impl Debug for PartialResponse {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Partial response stream_id [{}] | connexion_id [{}] | request_uuid [{}] | headers [{:?}] | ", self.stream_id, self.connexion_id, self.request_uuid, self.headers)
+            write!(
+                f,
+                "Partial response stream_id [{}] | connexion_id [{}] | request_uuid [{}] | headers [{:?}] | ",
+                self.stream_id, self.connexion_id, self.request_uuid, self.headers
+            )
         }
     }
     impl PartialResponse {
@@ -1050,10 +1070,10 @@ mod response_builder {
                                     ))
                                 {
                                     debug!(
-                        "Error: Failed sending progress status for stream_id [{}] -> [{:?}]",
-                        headers.stream_id(),
-                        e
-                         );
+                                        "Error: Failed sending progress status for stream_id [{}] -> [{:?}]",
+                                        headers.stream_id(),
+                                        e
+                                    );
                                 }
                             } else {
                                 error!("Failed parsing hdr value : not a digit");
@@ -1089,10 +1109,10 @@ mod response_builder {
                             vec![],
                         )) {
                             debug!(
-                        "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
-                        headers.stream_id(),
-                        e
-                    );
+                                "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
+                                headers.stream_id(),
+                                e
+                            );
                         }
                         can_delete_in_table = true;
                     }
@@ -1290,10 +1310,10 @@ mod response_manager_worker {
         partial_response_receiver: PartialResponseReceiver,
         thread_controller: &ThreadController,
         request_builder_table: &Arc<Mutex<HashMap<Uuid, Http3RequestBuilder>>>,
+        partial_response_table: Arc<Mutex<HashMap<(u64, String), PartialResponse>>>,
+        epoch: Arc<std::sync::atomic::AtomicU64>,
     ) {
         let manager_id = Uuid::new_v4();
-        let partial_response_table =
-            Arc::new(Mutex::new(HashMap::<(u64, String), PartialResponse>::new()));
         let partial_table_clone_0 = partial_response_table.clone();
         let partial_table_clone_1 = partial_response_table.clone();
         let response_worker_manager_id = manager_id;
@@ -1368,13 +1388,16 @@ mod response_manager_worker {
         });
 
         std::thread::spawn(move || {
-            while let Ok(partial_response_submission) = partial_response_receiver.recv() {
+            while let Ok(submission) = partial_response_receiver.recv() {
+                let table_guard = &mut *partial_table_clone_1.lock().unwrap();
+                if submission.epoch != epoch.load(std::sync::atomic::Ordering::Acquire) {
+                    continue;
+                }
+                let partial_response_submission = submission.response;
                 let stream_id = partial_response_submission.stream_id();
                 let conn_id = partial_response_submission.connexion_id().to_owned();
                 let request_id = partial_response_submission.get_request_id();
                 let path = partial_response_submission.req_path().to_owned();
-                let table_guard = &mut *partial_table_clone_1.lock().unwrap();
-
                 let replaced = table_guard
                     .insert((stream_id, conn_id.clone()), partial_response_submission)
                     .is_some();

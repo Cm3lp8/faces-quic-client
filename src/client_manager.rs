@@ -152,9 +152,22 @@ mod client_management {
         }
 
         pub fn shutdown_client(&self) {
-            self.http3_client.mark_disconnected();
             self.thread_controller.switch_off();
+            self.http3_client
+                .invalidate_pending_connects("session_closed");
+            self.http3_client.drain_stale_requests("session_closed");
+            self.request_manager.wake_client();
+            self.http3_client.mark_disconnected();
             self.request_manager.stop();
+        }
+        pub fn close_session(&self) -> Result<(), ()> {
+            self.thread_controller.seal();
+            self.shutdown_client();
+            self.http3_client.wait_stopped(Duration::from_secs(5))
+        }
+        pub fn resume_session(&self) {
+            self.thread_controller.reset();
+            self.request_manager.rerun();
         }
         pub fn start_new_connection(&self) -> Result<(), ()> {
             std::thread::sleep(Duration::from_millis(350)); // this sleep is to wait for response
