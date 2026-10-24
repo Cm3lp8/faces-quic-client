@@ -94,7 +94,16 @@ mod client_management {
         ///ConnexionInfos can be modified with new_connect_infos()
         ///
         pub fn new(peer_socket_address: &str) -> Self {
-            let client_config = ClientConfig::new();
+            let peer: std::net::SocketAddr = peer_socket_address
+                .parse()
+                .expect("invalid peer socket address");
+            let tls = crate::ServerTlsConfig::system_roots(&peer.ip().to_string())
+                .expect("socket IP is a valid TLS identity");
+            Self::with_server_tls(peer_socket_address, tls)
+        }
+
+        pub fn with_server_tls(peer_socket_address: &str, tls: crate::ServerTlsConfig) -> Self {
+            let client_config = ClientConfig::with_server_tls(tls);
             my_log::init();
             let thread_controller = ThreadController::new("shutdown_all_workers");
             client_config
@@ -149,9 +158,9 @@ mod client_management {
         }
         pub fn start_new_connection(&self) -> Result<(), ()> {
             std::thread::sleep(Duration::from_millis(350)); // this sleep is to wait for response
-                                                            // 250 ms
-                                                            // timeout / TODO find better
-                                                            // approach
+            // 250 ms
+            // timeout / TODO find better
+            // approach
             self.thread_controller.switch_on();
             self.request_manager.rerun();
             Ok(())

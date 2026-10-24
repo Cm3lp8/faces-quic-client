@@ -12,11 +12,13 @@ mod client_configuration {
     ///
     pub struct ClientConfig {
         connexion_info: ConnexionInfos,
+        server_tls: Option<crate::ServerTlsConfig>,
     }
     impl Clone for ClientConfig {
         fn clone(&self) -> Self {
             Self {
                 connexion_info: self.connexion_info.clone(),
+                server_tls: self.server_tls.clone(),
             }
         }
     }
@@ -28,7 +30,19 @@ mod client_configuration {
         pub fn new() -> ClientConfig {
             Self {
                 connexion_info: ConnexionInfos::new(),
+                server_tls: None,
             }
+        }
+        pub(crate) fn with_server_tls(server_tls: crate::ServerTlsConfig) -> Self {
+            Self {
+                connexion_info: ConnexionInfos::new(),
+                server_tls: Some(server_tls),
+            }
+        }
+        pub(crate) fn server_tls(&self) -> Result<&crate::ServerTlsConfig, crate::ServerTlsError> {
+            self.server_tls
+                .as_ref()
+                .ok_or(crate::ServerTlsError::InvalidIdentity)
         }
         pub fn local_address(&self) -> Option<SocketAddr> {
             self.connexion_info.get_local_socket_address()
@@ -158,7 +172,10 @@ mod connexion_info {
                 }
                 ConnexionInfosInner::SetUp(conn_info) => {
                     if conn_info.local_socket.is_none() || conn_info.distant_socket.is_none() {
-                        println!("connexion infos incomplete local socket infos [{:?}]  distant_socket infos [{:?}]", conn_info.local_socket, conn_info.distant_socket);
+                        println!(
+                            "connexion infos incomplete local socket infos [{:?}]  distant_socket infos [{:?}]",
+                            conn_info.local_socket, conn_info.distant_socket
+                        );
                         return;
                     }
 

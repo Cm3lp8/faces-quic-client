@@ -1,19 +1,19 @@
 use crossbeam::channel::Sender;
 use log::{debug, error, info, warn};
 //#[macro_use]
-use mio::{event::Event, Events, Poll, Token, Waker};
+use mio::{Events, Poll, Token, Waker, event::Event};
 use notify_rust::error::ErrorKind;
 use quiche::{
-    h3::{self},
     Connection,
+    h3::{self},
 };
 use ring::rand::*;
 use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -79,9 +79,12 @@ pub fn run(
         )
         .unwrap();
     // Create the configuration for the QUIC connection.
-    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
-    // *CAUTION*: this should not be set to `false` in production!!!
-    config.verify_peer(false);
+    let tls = client_config.server_tls().map_err(|error| {
+        error!("[quic_client][server_auth] {error}");
+    })?;
+    let mut config = tls.quic_config().map_err(|error| {
+        error!("[quic_client][server_auth] {error}");
+    })?;
     config
         .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
         .unwrap();
@@ -105,7 +108,7 @@ pub fn run(
     let local_addr = socket.local_addr().unwrap();
     // Create a QUIC connection and initiate handshake.
     let mut conn =
-        quiche::connect(Some("quichec"), &scid, local_addr, peer_addr, &mut config).unwrap();
+        quiche::connect(tls.sni(), &scid, local_addr, peer_addr, &mut config).map_err(|_| ())?;
     info!(
         "connecting to {:} from {:} with scid {}",
         peer_addr,
@@ -245,6 +248,11 @@ pub fn run(
         }
         // Create a new HTTP/3 connection once the QUIC connection is established.
         if conn.is_established() && http3_conn.is_none() {
+            if let Err(error) = tls.verify_identity(conn.peer_cert()) {
+                error!("[quic_client][server_auth] {error}");
+                let _ = conn.close(false, 0x100, b"server_identity_rejected");
+                break Err(());
+            }
             http3_conn = Some(
                 quiche::h3::Connection::with_transport(&mut conn, &h3_config)
                 .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
@@ -315,7 +323,10 @@ pub fn run(
                                     false,
                                 ))
                             {
-                                info!("Error:  failed sending data response to response queue  [{}]   [{:?}]", stream_id, e);
+                                info!(
+                                    "Error:  failed sending data response to response queue  [{}]   [{:?}]",
+                                    stream_id, e
+                                );
                             };
                         }
                     }
@@ -413,18 +424,13 @@ pub fn run(
                                     {
                                         error!(
                                             "[faces_diag][quic_client][loop] stream_id_notify_failed path={} conn_id={} stream_id={} error={:?}",
-                                            request_path,
-                                            trace_id,
-                                            stream_id,
-                                            e
+                                            request_path, trace_id, stream_id, e
                                         );
                                         error!("failed to send back stream ids")
                                     } else {
                                         info!(
                                             "[faces_diag][quic_client][loop] stream_id_notified path={} conn_id={} stream_id={}",
-                                            request_path,
-                                            trace_id,
-                                            stream_id
+                                            request_path, trace_id, stream_id
                                         );
                                     }
                                     my_log::debug(format!("sended succes [{:?}]", header_req));
@@ -433,9 +439,7 @@ pub fn run(
                                 Err(e) => {
                                     warn!(
                                         "[faces_diag][quic_client][loop] send_request_failed path={} conn_id={} error={:?}",
-                                        request_path,
-                                        trace_id,
-                                        e
+                                        request_path, trace_id, e
                                     );
                                 }
                             }
@@ -468,8 +472,7 @@ pub fn run(
                                         Err(e) => {
                                             error!(
                                                 "Error : Failed to send close stream request [{}], packet [{:?}]",
-                                                stream_id,
-                                                e
+                                                stream_id, e
                                             );
                                         }
                                     }
@@ -477,8 +480,7 @@ pub fn run(
                                 Err(e) => {
                                     warn!(
                                         "[faces_diag][quic_client] close_stream_invalid_state stream_id={} error={:?}",
-                                        stream_id,
-                                        e
+                                        stream_id, e
                                     );
                                     let _ = adjust_send_timer.send(Instant::now());
                                 }
@@ -539,12 +541,22 @@ pub fn run(
 
                                             if body_req.is_end() {
                                                 debug!(
-                                                    " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_stream_id,
-                                                    h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
+                                                    " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]",
+                                                    body_stream_id,
+                                                    h3_byte_written,
+                                                    h3_bytes_given,
+                                                    bodies_send,
+                                                    pending_count,
+                                                    pending_bodies.is_empty()
                                                 );
                                                 println!(
-                                                    " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]", body_stream_id,
-                                                    h3_byte_written, h3_bytes_given,bodies_send, pending_count, pending_bodies.is_empty()
+                                                    " [{}]SUCCESS ! total_writtent [{}/{}] (given) Request send ! [{}] chunks send\n Pending bodies send [{}]\n pending table is is_empty[{:?}]",
+                                                    body_stream_id,
+                                                    h3_byte_written,
+                                                    h3_bytes_given,
+                                                    bodies_send,
+                                                    pending_count,
+                                                    pending_bodies.is_empty()
                                                 );
 
                                                 for i in pending_bodies.iter() {

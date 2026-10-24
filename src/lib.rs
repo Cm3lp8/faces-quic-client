@@ -1,5 +1,7 @@
 extern crate log;
 mod client_config;
+mod server_tls;
+pub use server_tls::{ServerTlsConfig, ServerTlsError};
 mod client_init;
 mod client_manager;
 mod client_traits;
