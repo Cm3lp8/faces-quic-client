@@ -394,19 +394,43 @@ pub fn run(
                     my_log::debug("%%%%%% A REQ %%%");
                     my_log::debug(&req);
                     match req {
-                        Http3Request::Header(header_req) => {
+                        Http3Request::Header(header_req) => 'header: {
                             let request_path = header_req.path().unwrap_or("<unknown>").to_owned();
                             let send_started_at = Instant::now();
                             info!(
                                 "[faces_diag][quic_client][loop] header_dequeued path={} conn_id={}",
                                 request_path, trace_id
                             );
+                            if !header_req.can_register_response(run_generation) {
+                                header_req.cancel_registration();
+                                break 'header;
+                            }
                             match h3_conn.send_request(
                                 &mut conn,
                                 header_req.headers(),
                                 header_req.is_end(),
                             ) {
                                 Ok(stream_id) => {
+                                    // send_request only queues local bytes. Install the
+                                    // response owner before confirming ids, flushing UDP,
+                                    // or polling another HTTP event.
+                                    if header_req
+                                        .finish_open(stream_id, trace_id.as_str(), run_generation)
+                                        .is_err()
+                                    {
+                                        header_req.cancel_registration();
+                                        let _ = conn.stream_shutdown(
+                                            stream_id,
+                                            quiche::Shutdown::Read,
+                                            0x10c,
+                                        );
+                                        let _ = conn.stream_shutdown(
+                                            stream_id,
+                                            quiche::Shutdown::Write,
+                                            0x10c,
+                                        );
+                                        break 'header;
+                                    }
                                     req_start = std::time::Instant::now();
                                     info!(
                                         "[faces_diag][quic_client][loop] header_sent path={} conn_id={} stream_id={} elapsed_ms={}",
@@ -417,20 +441,10 @@ pub fn run(
                                     );
                                     let _ = waker_1.wake();
 
-                                    if let Err(e) =
-                                        header_req.send_ids(stream_id, trace_id.as_str())
-                                    {
-                                        error!(
-                                            "[faces_diag][quic_client][loop] stream_id_notify_failed path={} conn_id={} stream_id={} error={:?}",
-                                            request_path, trace_id, stream_id, e
-                                        );
-                                        error!("failed to send back stream ids")
-                                    } else {
-                                        info!(
-                                            "[faces_diag][quic_client][loop] stream_id_notified path={} conn_id={} stream_id={}",
-                                            request_path, trace_id, stream_id
-                                        );
-                                    }
+                                    info!(
+                                        "[faces_diag][quic_client][loop] stream_id_notified path={} conn_id={} stream_id={}",
+                                        request_path, trace_id, stream_id
+                                    );
                                     my_log::debug(format!("sended succes [{:?}]", header_req));
                                     println!("[{:?}]", format!("sended succes [{:?}]", header_req));
                                 }
@@ -439,6 +453,7 @@ pub fn run(
                                         "[faces_diag][quic_client][loop] send_request_failed path={} conn_id={} error={:?}",
                                         request_path, trace_id, e
                                     );
+                                    header_req.cancel_registration();
                                 }
                             }
                         }

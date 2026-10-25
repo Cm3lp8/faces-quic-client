@@ -9,6 +9,7 @@ pub use request_builder::{
 };
 pub use request_format::{BodyType, H3Method};
 mod event_listener;
+pub(crate) use request_builder::HeaderRequest;
 mod queue_builder {
     use std::time::{Duration, Instant};
 
@@ -477,6 +478,7 @@ mod request_builder {
         headers: Vec<h3::Header>,
         stream_id_response: crossbeam::channel::Sender<(u64, String)>,
         is_end: bool,
+        registration: Option<crate::client_manager::response_manager::ResponseRegistration>,
     }
     impl Clone for HeaderRequest {
         fn clone(&self) -> Self {
@@ -484,6 +486,7 @@ mod request_builder {
                 headers: self.headers.clone(),
                 stream_id_response: self.stream_id_response.clone(),
                 is_end: self.is_end,
+                registration: self.registration.clone(),
             }
         }
     }
@@ -498,6 +501,54 @@ mod request_builder {
                 headers: vec![],
                 stream_id_response,
                 is_end,
+                registration: None,
+            }
+        }
+        pub(crate) fn set_registration(
+            &mut self,
+            registration: crate::client_manager::response_manager::ResponseRegistration,
+        ) {
+            self.registration = Some(registration);
+        }
+        pub(crate) fn can_register_response(&self, generation: u64) -> bool {
+            self.registration
+                .as_ref()
+                .is_none_or(|registration| registration.is_pending(generation))
+        }
+        pub(crate) fn register_response(
+            &self,
+            stream_id: u64,
+            connection: &str,
+            generation: u64,
+        ) -> Result<(), ()> {
+            match &self.registration {
+                Some(registration) => {
+                    registration.bind(&(stream_id, connection.to_owned()), generation)
+                }
+                None => Ok(()),
+            }
+        }
+        pub(crate) fn finish_open(
+            &self,
+            stream_id: u64,
+            connection: &str,
+            generation: u64,
+        ) -> Result<(), ()> {
+            self.register_response(stream_id, connection, generation)?;
+            // The QUIC loop must never wait for the requesting thread.
+            if self
+                .stream_id_response
+                .try_send((stream_id, connection.to_owned()))
+                .is_err()
+            {
+                self.cancel_registration();
+                return Err(());
+            }
+            Ok(())
+        }
+        pub(crate) fn cancel_registration(&self) {
+            if let Some(registration) = &self.registration {
+                registration.cancel();
             }
         }
         pub fn add_header(mut self, name: &str, value: &str) -> Self {

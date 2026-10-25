@@ -65,6 +65,9 @@ mod http3_client {
         ///
         ///Check if a connexion is already started with the requested server
         ///
+        pub(crate) fn generation_counter(&self) -> Arc<AtomicU64> {
+            self.connect_generation.clone()
+        }
         pub fn is_off(&self) -> bool {
             !*self.connexion_opened.lock().unwrap()
         }

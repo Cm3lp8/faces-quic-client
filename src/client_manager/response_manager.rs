@@ -5,6 +5,8 @@ pub use response_builder::{
     WaitPeerResponse,
 };
 pub use response_mngr::ResponseManager;
+mod registration;
+pub(crate) use registration::{PreparedResponse, ResponseRegistration};
 
 #[cfg(test)]
 mod stream_error_tests;
@@ -77,11 +79,36 @@ mod response_mngr {
             }
         }
         pub fn stop(&self) {
-            // Serialize retirement with insertion and response dispatch on the existing owner.
-            let mut partials = self.partials.lock().unwrap();
-            self.epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            partials.clear();
-            self.request_builder.lock().unwrap().clear();
+            // Capture the retiring builders before locking responses. Opening a
+            // stream can hold the builder lock while QUIC registers its response.
+            // There is no later global clear that could erase a new builder.
+            let retired_builders = std::mem::take(&mut *self.request_builder.lock().unwrap());
+            let retired_responses = {
+                let mut partials = self.partials.lock().unwrap();
+                self.epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                std::mem::take(&mut *partials)
+            };
+            drop(retired_responses);
+            drop(retired_builders);
+        }
+        pub(crate) fn prepare(
+            &self,
+            generation: Arc<std::sync::atomic::AtomicU64>,
+            path: &str,
+            subscribers: Vec<Arc<dyn crate::RequestEventListener + Send + Sync>>,
+            stream: Option<crate::client_manager::persistant_stream::StreamSub>,
+            request_id: Uuid,
+        ) -> PreparedResponse {
+            PreparedResponse::new(
+                self.partials.clone(),
+                self.epoch.clone(),
+                self.thread_controller.clone(),
+                generation,
+                path,
+                subscribers,
+                stream,
+                request_id,
+            )
         }
         // Get the handle to submit PartialResponse to the response manager.
         pub fn submitter(&self) -> PartialResponseSubmitter {
@@ -91,6 +118,110 @@ mod response_mngr {
             }
         }
     }
+    #[cfg(test)]
+    mod registration_stop_tests {
+        use super::*;
+        use crate::client_manager::request_manager::Http3RequestPrep;
+        use std::{
+            sync::atomic::AtomicU64,
+            time::{Duration, Instant},
+        };
+        const WAIT: Duration = Duration::from_secs(1);
+        fn wait_until(mut predicate: impl FnMut() -> bool) {
+            let deadline = Instant::now() + WAIT;
+            while !predicate() {
+                assert!(
+                    Instant::now() < deadline,
+                    "stop did not reach its checkpoint"
+                );
+                std::thread::yield_now();
+            }
+        }
+        #[test]
+        fn stop_captures_builders_before_responses_and_preserves_later_injections() {
+            let controller = ThreadController::new("stop-registration");
+            let builders = Arc::new(Mutex::new(HashMap::new()));
+            let old_id = Uuid::new_v4();
+            builders
+                .lock()
+                .unwrap()
+                .insert(old_id, Http3RequestPrep::new(None, old_id));
+            let channel = ResponseChannel::new(&controller);
+            let manager = ResponseManager::new(channel.get_queue(), &controller, &builders);
+            let generation = Arc::new(AtomicU64::new(1));
+            let old = manager.prepare(generation.clone(), "/old", vec![], None, old_id);
+            controller.switch_off();
+            // The lock deterministically prevents retirement of responses while
+            // allowing stop's earlier ownership capture of the builder map.
+            let partials = manager.partials.lock().unwrap();
+            let stopped = manager.clone();
+            let (sender, receiver) = crossbeam::channel::bounded(1);
+            let worker = std::thread::spawn(move || {
+                stopped.stop();
+                sender.send(()).unwrap();
+            });
+            wait_until(|| builders.lock().unwrap().is_empty());
+            let injected_id = Uuid::new_v4();
+            builders
+                .lock()
+                .unwrap()
+                .insert(injected_id, Http3RequestPrep::new(None, injected_id));
+            drop(partials);
+            receiver.recv_timeout(WAIT).unwrap();
+            worker.join().unwrap();
+            assert!(builders.lock().unwrap().contains_key(&injected_id));
+            assert!(!builders.lock().unwrap().contains_key(&old_id));
+            assert!(old.registration().bind(&(0, "old".into()), 1).is_err());
+            assert!(manager.partials.lock().unwrap().is_empty());
+            // Injection above was outside admission. Only now admit a genuine
+            // new generation, and prove it remains usable after completed stop.
+            generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            controller.reset();
+            let fresh = manager.prepare(generation, "/new", vec![], None, Uuid::new_v4());
+            fresh.registration().bind(&(0, "new".into()), 2).unwrap();
+            assert_eq!(manager.partials.lock().unwrap().len(), 1);
+            drop(old);
+            assert_eq!(manager.partials.lock().unwrap().len(), 1);
+            drop(fresh);
+            assert!(manager.partials.lock().unwrap().is_empty());
+        }
+        #[test]
+        fn closed_admission_releases_a_builder_waiting_for_stream_confirmation() {
+            let controller = ThreadController::new("closing-open");
+            let builders = Arc::new(Mutex::new(HashMap::new()));
+            let channel = ResponseChannel::new(&controller);
+            let manager = ResponseManager::new(channel.get_queue(), &controller, &builders);
+            let prepared = manager.prepare(
+                Arc::new(AtomicU64::new(1)),
+                "/open",
+                vec![],
+                None,
+                Uuid::new_v4(),
+            );
+            let (sender, received) = crossbeam::channel::bounded(1);
+            let mut header =
+                crate::client_manager::request_manager::HeaderRequest::new(true, sender);
+            header.set_registration(prepared.registration());
+            let held_builder = builders.lock().unwrap();
+            controller.switch_off();
+            let stop = manager.clone();
+            let (done, stopped) = crossbeam::channel::bounded(1);
+            let worker = std::thread::spawn(move || {
+                stop.stop();
+                done.send(()).unwrap();
+            });
+            assert!(header.finish_open(0, "closed", 1).is_err());
+            header.cancel_registration();
+            drop(header);
+            assert!(received.recv_timeout(WAIT).is_err());
+            drop(prepared);
+            drop(held_builder);
+            stopped.recv_timeout(WAIT).unwrap();
+            worker.join().unwrap();
+            assert!(manager.partials.lock().unwrap().is_empty());
+        }
+    }
+
     impl Clone for ResponseManager {
         fn clone(&self) -> Self {
             Self {
@@ -914,6 +1045,10 @@ mod response_builder {
             let response_receiver = partial_response.response_channel.1.clone();
             let progress_receiver = partial_response.progress_channel.1.clone();
             (partial_response, response_receiver, progress_receiver)
+        }
+        pub(super) fn bind_stream_ids(&mut self, ids: &(u64, String)) {
+            self.stream_id = ids.0;
+            self.connexion_id = ids.1.clone();
         }
         pub fn get_request_id(&self) -> Uuid {
             self.request_uuid

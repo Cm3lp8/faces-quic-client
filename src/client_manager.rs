@@ -377,7 +377,8 @@ mod client_management {
         pub fn send(&self) -> Result<WaitPeerResponse, ()> {
             let uuid = self.0;
 
-            if let Some(mut entry) = self.1.request_builder.lock().unwrap().remove(&uuid) {
+            let entry = { self.1.request_builder.lock().unwrap().remove(&uuid) };
+            if let Some(mut entry) = entry {
                 return self.1.request_manager.new_request_with_builder(&mut entry);
             }
             Err(())

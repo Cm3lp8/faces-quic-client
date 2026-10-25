@@ -22,7 +22,7 @@ mod client_request_mngr {
                 Http3Request, Http3RequestBuilder, Http3RequestConfirm, Http3RequestPrep,
                 RequestHead,
             },
-            response_manager::{PartialResponse, ResponseManager, WaitPeerResponse},
+            response_manager::{ResponseManager, ResponseRegistration, WaitPeerResponse},
             BodyHead, ResponseQueue,
         },
         my_log,
@@ -386,10 +386,12 @@ mod client_request_mngr {
             kind: &str,
             path: &Option<String>,
             req_id: Uuid,
-            http3_request: &[Http3RequestPrep],
-        ) {
-            for req in http3_request {
-                if let Http3RequestPrep::Header(header_req) = req {
+            http3_request: &mut Vec<Http3RequestPrep>,
+            registration: &ResponseRegistration,
+        ) -> Result<(), ()> {
+            let mut remaining = Vec::new();
+            for req in http3_request.drain(..) {
+                if let Http3RequestPrep::Header(mut header_req) = req {
                     let enqueue_started_at = Instant::now();
                     let adjust_sending_duration = crossbeam::channel::bounded::<Instant>(1);
                     info!(
@@ -398,12 +400,10 @@ mod client_request_mngr {
                         Self::path_for_log(path),
                         req_id
                     );
+                    header_req.set_registration(registration.clone());
                     if self
                         .request_head
-                        .send_request((
-                            Http3Request::Header(header_req.clone()),
-                            adjust_sending_duration.0,
-                        ))
+                        .send_request((Http3Request::Header(header_req), adjust_sending_duration.0))
                         .is_err()
                     {
                         warn!(
@@ -412,7 +412,7 @@ mod client_request_mngr {
                             Self::path_for_log(path),
                             req_id
                         );
-                        println!("Error sending header request");
+                        return Err(());
                     } else {
                         info!(
                             "[faces_diag][quic_client][request] header_enqueued kind={} path={} request_id={} elapsed_ms={}",
@@ -423,8 +423,12 @@ mod client_request_mngr {
                         );
                         self.wake_client();
                     }
+                } else {
+                    remaining.push(req);
                 }
             }
+            *http3_request = remaining;
+            Ok(())
         }
 
         fn wait_stream_ids_for_request(
@@ -486,9 +490,22 @@ mod client_request_mngr {
             let req_id = http3_request_builder.req_uuid();
             my_log::debug("ici connexion ping");
             match http3_request_builder.build_down_stream(keep_alive) {
-                Ok((http3_request, event_subscriber, http3_confirm)) => {
+                Ok((mut http3_request, event_subscriber, http3_confirm)) => {
                     self.ensure_connection_for_request("downstream", &path, req_id)?;
-                    self.enqueue_headers_for_request("downstream", &path, req_id, &http3_request);
+                    let prepared = self.response_manager.prepare(
+                        self.http3_client.generation_counter(),
+                        path.as_deref().ok_or(())?,
+                        event_subscriber,
+                        Some(StreamSub::Downstream(Arc::new(stream_cb))),
+                        req_id,
+                    );
+                    self.enqueue_headers_for_request(
+                        "downstream",
+                        &path,
+                        req_id,
+                        &mut http3_request,
+                        &prepared.registration(),
+                    )?;
                     // Once the stream has been created, we receive it back from the client loop.
                     let stream_ids = Self::wait_stream_ids_for_request(
                         "downstream",
@@ -530,52 +547,7 @@ mod client_request_mngr {
                         }
                     }
 
-                    let response_manager_submission = self.response_manager.submitter();
-                    let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
-                    let response_sender = response_chan.0.clone();
-                    let stream_cb_syncable = Arc::new(stream_cb);
-
-                    let thread_controller = self.thread_controller.clone();
-                    std::thread::spawn(move || {
-                        let (partial_response, completed_channel, progress_channel) =
-                            PartialResponse::new_streamable(
-                                path.unwrap().as_str(),
-                                event_subscriber,
-                                StreamSub::Downstream(stream_cb_syncable),
-                                &stream_ids,
-                                req_id,
-                            );
-
-                        let peer_response = WaitPeerResponse::new(
-                            &stream_ids,
-                            completed_channel,
-                            progress_channel,
-                            &thread_controller,
-                        );
-                        if let Err(e) = response_sender.send(peer_response) {
-                            println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
-                        }
-
-                        //send partial response to the reponse manager
-                        if let Err(e) = response_manager_submission.submit(partial_response) {
-                            println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
-                        }
-
-                        /*
-                         *
-                         *
-                         * Get the response back -> ask the response table in the response worker
-                         * with the stream_id that is unique per connexion
-                         *
-                         *
-                         * */
-                    });
-
-                    if let Ok(response) = response_chan.1.recv() {
-                        Ok(response)
-                    } else {
-                        Err(())
-                    }
+                    prepared.into_waiter(&stream_ids)
                 }
                 Err(()) => Err(()),
             }
@@ -587,9 +559,22 @@ mod client_request_mngr {
             let path = http3_request_builder.get_path();
             let req_id = http3_request_builder.req_uuid();
             match http3_request_builder.build() {
-                Ok((http3_request, event_subscriber, http3_confirm)) => {
+                Ok((mut http3_request, event_subscriber, http3_confirm)) => {
                     self.ensure_connection_for_request("builder", &path, req_id)?;
-                    self.enqueue_headers_for_request("builder", &path, req_id, &http3_request);
+                    let prepared = self.response_manager.prepare(
+                        self.http3_client.generation_counter(),
+                        path.as_deref().ok_or(())?,
+                        event_subscriber,
+                        None,
+                        req_id,
+                    );
+                    self.enqueue_headers_for_request(
+                        "builder",
+                        &path,
+                        req_id,
+                        &mut http3_request,
+                        &prepared.registration(),
+                    )?;
                     let stream_ids =
                         Self::wait_stream_ids_for_request("builder", &path, req_id, http3_confirm)?;
                     let stream_id = stream_ids.0;
@@ -616,95 +601,7 @@ mod client_request_mngr {
                         }
                     }
 
-                    let response_manager_submission = self.response_manager.submitter();
-                    let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
-                    let response_sender = response_chan.0.clone();
-
-                    let thread_controller = self.thread_controller.clone();
-                    trace!(
-                        "[faces_diag][quic_client][request] waiter_thread_spawn kind=builder path={} request_id={} stream_id={} conn_id={}",
-                        Self::path_for_log(&path),
-                        req_id,
-                        stream_id,
-                        stream_ids.1.as_str()
-                    );
-                    std::thread::spawn(move || {
-                        let path = path.unwrap();
-                        let (partial_response, completed_channel, progress_channel) =
-                            PartialResponse::new(
-                                path.as_str(),
-                                event_subscriber,
-                                &stream_ids,
-                                req_id,
-                            );
-
-                        let peer_response = WaitPeerResponse::new(
-                            &stream_ids,
-                            completed_channel,
-                            progress_channel,
-                            &thread_controller,
-                        );
-                        trace!(
-                            "[faces_diag][quic_client][request] waiter_created kind=builder path={} request_id={} stream_id={} conn_id={}",
-                            path,
-                            req_id,
-                            stream_ids.0,
-                            stream_ids.1.as_str()
-                        );
-                        if let Err(e) = response_sender.send(peer_response) {
-                            trace!(
-                                "[faces_diag][quic_client][request] waiter_return_failed kind=builder path={} request_id={} stream_id={} conn_id={} error={:?}",
-                                path,
-                                req_id,
-                                stream_ids.0,
-                                stream_ids.1.as_str(),
-                                e
-                            );
-                        } else {
-                            trace!(
-                                "[faces_diag][quic_client][request] waiter_returned kind=builder path={} request_id={} stream_id={} conn_id={}",
-                                path,
-                                req_id,
-                                stream_ids.0,
-                                stream_ids.1.as_str()
-                            );
-                        }
-
-                        //send partial response to the reponse manager
-                        if let Err(e) = response_manager_submission.submit(partial_response) {
-                            trace!(
-                                "[faces_diag][quic_client][request] waiter_submit_failed kind=builder path={} request_id={} stream_id={} conn_id={} error={:?}",
-                                path,
-                                req_id,
-                                stream_ids.0,
-                                stream_ids.1.as_str(),
-                                e
-                            );
-                        } else {
-                            trace!(
-                                "[faces_diag][quic_client][request] waiter_submitted kind=builder path={} request_id={} stream_id={} conn_id={}",
-                                path,
-                                req_id,
-                                stream_ids.0,
-                                stream_ids.1.as_str()
-                            );
-                        }
-
-                        /*
-                         *
-                         *
-                         * Get the response back -> ask the response table in the response worker
-                         * with the stream_id that is unique per connexion
-                         *
-                         *
-                         * */
-                    });
-
-                    if let Ok(response) = response_chan.1.recv() {
-                        Ok(response)
-                    } else {
-                        Err(())
-                    }
+                    prepared.into_waiter(&stream_ids)
                 }
                 Err(()) => Err(()),
             }
@@ -727,9 +624,22 @@ mod client_request_mngr {
             let request_id = http3_request_builder.req_uuid();
             let path = http3_request_builder.get_path();
             match http3_request_builder.build() {
-                Ok((http3_request, event_subscriber, http3_confirm)) => {
+                Ok((mut http3_request, event_subscriber, http3_confirm)) => {
                     self.ensure_connection_for_request("direct", &path, request_id)?;
-                    self.enqueue_headers_for_request("direct", &path, request_id, &http3_request);
+                    let prepared = self.response_manager.prepare(
+                        self.http3_client.generation_counter(),
+                        path.as_deref().ok_or(())?,
+                        event_subscriber,
+                        None,
+                        request_id,
+                    );
+                    self.enqueue_headers_for_request(
+                        "direct",
+                        &path,
+                        request_id,
+                        &mut http3_request,
+                        &prepared.registration(),
+                    )?;
                     let stream_ids = Self::wait_stream_ids_for_request(
                         "direct",
                         &path,
@@ -750,50 +660,7 @@ mod client_request_mngr {
                         }
                     }
 
-                    let response_manager_submission = self.response_manager.submitter();
-                    let response_chan = crossbeam::channel::bounded::<WaitPeerResponse>(1);
-                    let response_sender = response_chan.0.clone();
-
-                    let thread_controller = self.thread_controller.clone();
-                    std::thread::spawn(move || {
-                        let (partial_response, completed_channel, progress_channel) =
-                            PartialResponse::new(
-                                path.unwrap().as_str(),
-                                event_subscriber,
-                                &stream_ids,
-                                request_id,
-                            );
-
-                        let peer_response = WaitPeerResponse::new(
-                            &stream_ids,
-                            completed_channel,
-                            progress_channel,
-                            &thread_controller,
-                        );
-                        if let Err(e) = response_sender.send(peer_response) {
-                            println!("Error: sending back WaitPeerResponse failed stream_id[{:?}] [{:?}]",stream_ids,e);
-                        }
-
-                        //send partial response to the reponse manager
-                        if let Err(e) = response_manager_submission.submit(partial_response) {
-                            println!("Error: failed to submit Partial response for stream_id[{:?}]   [{:?}]", stream_ids,e );
-                        }
-
-                        /*
-                         *
-                         *
-                         * Get the response back -> ask the response table in the response worker
-                         * with the stream_id that is unique per connexion
-                         *
-                         *
-                         * */
-                    });
-
-                    if let Ok(response) = response_chan.1.recv() {
-                        Ok(response)
-                    } else {
-                        Err(())
-                    }
+                    prepared.into_waiter(&stream_ids)
                 }
                 Err(()) => Err(()),
             }
