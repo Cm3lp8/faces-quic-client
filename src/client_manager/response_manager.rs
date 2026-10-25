@@ -10,6 +10,8 @@ pub(crate) use registration::{PreparedResponse, ResponseRegistration};
 
 #[cfg(test)]
 mod stream_error_tests;
+#[cfg(test)]
+mod ordinary_error_tests;
 
 struct ResponseSubmission {
     epoch: u64,
@@ -1280,17 +1282,33 @@ mod response_builder {
                         )
                         .parse::<usize>()
                         .unwrap();
-                        let content_len = String::from_utf8_lossy(
-                            headers
-                                .iter()
-                                .find(|hdr| hdr.name() == b"content-length")
-                                .unwrap()
-                                .value(),
-                        )
-                        .parse::<usize>()
-                        .unwrap_or(0);
+                        let content_len = headers
+                            .iter()
+                            .find(|hdr| hdr.name() == b"content-length")
+                            .map(|header| {
+                                String::from_utf8_lossy(header.value())
+                                    .parse::<usize>()
+                                    .unwrap_or(0)
+                            });
 
-                        respond_once(self, body, status, content_len, &mut can_delete_in_table);
+                        if status != 200 && content_len.unwrap_or(0) == 0 {
+                            // Middleware errors can legitimately omit a length.
+                            // No total is available for progress; FIN is terminal.
+                            self.data.extend_from_slice(body.packet());
+                            if body.is_end() {
+                                self.complete_response();
+                                return true;
+                            }
+                            return false;
+                        }
+
+                        respond_once(
+                            self,
+                            body,
+                            status,
+                            content_len.unwrap(),
+                            &mut can_delete_in_table,
+                        );
                         self.completed = can_delete_in_table;
                         return can_delete_in_table;
                     }
