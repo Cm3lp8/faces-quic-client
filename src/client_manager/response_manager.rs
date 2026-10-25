@@ -6,6 +6,9 @@ pub use response_builder::{
 };
 pub use response_mngr::ResponseManager;
 
+#[cfg(test)]
+mod stream_error_tests;
+
 struct ResponseSubmission {
     epoch: u64,
     response: PartialResponse,
@@ -843,6 +846,7 @@ mod response_builder {
         request_uuid: Uuid,
         req_path: String,
         streamable: Option<StreamSub>,
+        completed: bool,
         event_subscriber: Vec<Arc<dyn RequestEventListener + 'static + Send + Sync>>,
         headers: Option<Vec<h3::Header>>,
         content_length: Option<usize>,
@@ -892,6 +896,7 @@ mod response_builder {
                 connexion_id: stream_ids.1.to_owned(),
                 request_uuid,
                 streamable: None,
+                completed: false,
                 req_path: req_path.to_string(),
                 event_subscriber,
                 headers: None,
@@ -938,6 +943,7 @@ mod response_builder {
                 connexion_id: stream_ids.1.to_owned(),
                 request_uuid,
                 streamable: Some(stream_type),
+                completed: false,
                 req_path: req_path.to_string(),
                 event_subscriber,
                 headers: None,
@@ -1043,6 +1049,9 @@ mod response_builder {
         /// return true if data is complete
         ///
         pub fn extend_data(&mut self, server_packet: Http3Response) -> bool {
+            if self.completed {
+                return true;
+            }
             let mut can_delete_in_table = false;
 
             match server_packet {
@@ -1100,39 +1109,31 @@ mod response_builder {
                     };
 
                     if headers.is_end() {
-                        if let Err(e) = self.response_channel.0.send(CompletedResponse::new(
-                            self.stream_id,
-                            std::mem::replace(
-                                self.headers.as_mut().unwrap(),
-                                Vec::with_capacity(1),
-                            ),
-                            vec![],
-                        )) {
-                            debug!(
-                                "Error: Failed sending complete response for stream_id [{}] -> [{:?}]",
-                                headers.stream_id(),
-                                e
-                            );
-                        }
+                        self.complete_response();
                         can_delete_in_table = true;
                     }
                 }
                 Http3Response::Body(body) => {
-                    //in case it is a stream route
-                    let mut stream_sub = StreamSub::None;
-                    match &self.streamable {
-                        Some(strm_sub) => {
-                            stream_sub = strm_sub.clone();
-                        }
-                        None => {}
-                    }
-                    match &self.streamable {
-                        Some(_) => {
+                    if let Some(stream_sub) = self.streamable.clone() {
+                        let is_stream_response = self.headers.as_ref().is_some_and(|headers| {
+                            headers.iter().any(|header| {
+                                header.name() == b":status" && header.value() == b"200"
+                            })
+                        });
+                        if is_stream_response {
                             handle_down_stream(self, body, &stream_sub);
                             return false;
                         }
 
-                        None => {}
+                        // A rejected stream is an ordinary HTTP response. Its error body
+                        // has no notification framing, and FIN completes it even when
+                        // Content-Length is absent or zero.
+                        self.data.extend_from_slice(body.packet());
+                        if body.is_end() {
+                            self.complete_response();
+                            return true;
+                        }
+                        return false;
                     }
                     if let Some(headers) = &self.headers {
                         let status = String::from_utf8_lossy(
@@ -1155,6 +1156,7 @@ mod response_builder {
                         .unwrap_or(0);
 
                         respond_once(self, body, status, content_len, &mut can_delete_in_table);
+                        self.completed = can_delete_in_table;
                         return can_delete_in_table;
                     }
                     if let BodyType::UploadProgressStatusBody(progress_status) =
@@ -1172,6 +1174,21 @@ mod response_builder {
                 }
             }
             can_delete_in_table
+        }
+
+        fn complete_response(&mut self) {
+            self.completed = true;
+            let response = CompletedResponse::new(
+                self.stream_id,
+                self.headers.take().unwrap_or_default(),
+                std::mem::take(&mut self.data),
+            );
+            if let Err(error) = self.response_channel.0.send(response) {
+                debug!(
+                    "Failed sending complete response for stream_id [{}]: {:?}",
+                    self.stream_id, error
+                );
+            }
         }
     }
 
